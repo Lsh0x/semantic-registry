@@ -508,20 +508,42 @@ if store.get("convert_currency").await?.is_none() {
   not changed keep their stored vectors; only new or edited chunks are
   embedded, in one batch. Re-registering an unchanged entry embeds nothing.
 - **Replacing also replaces the examples**, including those learned through
-  feedback. To refresh an entry without losing them, start from the stored
-  version:
-
-  ```rust
-  // Keep the stored examples, seeded and learned; take the new text and payload
-  let entry = match store.get(&fresh.id).await? {
-      Some(stored) => Entry { text: fresh.text, payload: fresh.payload, ..stored },
-      None => fresh,
-  };
-  registry.register(entry).await?; // only the changed text is embedded again
-  ```
-
+  feedback. To refresh entries from their source without losing what was
+  learned, use `sync` instead.
 - **`remove(id)`** deletes the entry, its vectors and its usage history, and
-  returns whether it existed: call it when a tool disappears from its server.
+  returns whether it existed.
+
+### Syncing with a source
+
+`sync` makes the registry match a source's current list (an MCP server's
+tools, a skills folder, a config file) in one call:
+
+```rust
+let report = registry.sync(entries, OnMissing::Remove).await?;
+// report.added, report.updated, report.unchanged, report.removed
+```
+
+- A **new** id is registered.
+- A **known** id takes the new `text` and payload and **keeps its stored
+  examples**, learned ones included; examples the source added are appended.
+  Only changed chunks are embedded, and an identical entry is not touched:
+  syncing an unchanged source embeds nothing.
+- A **stored entry the source no longer lists** is removed, or kept and
+  reported in `report.missing` with `OnMissing::Keep`, for sources that list
+  only part of their entries or when you decide later.
+
+When one registry holds several sources, scope the sync so it only considers
+that source's entries missing:
+
+```rust
+let report = registry
+    .sync_scoped(tools, OnMissing::Keep, |entry| entry.id.starts_with("github/"))
+    .await?;
+```
+
+`sync` requires the payload to implement `PartialEq`, to tell an unchanged
+entry from an updated one. It holds each entry's lock while it merges, so a
+feedback arriving at the same time is never overwritten.
 
 Vector reuse assumes the formatter and the model have not changed since the
 entry was stored. After changing either, `remove` entries before registering
@@ -708,9 +730,7 @@ and `payload` the full MCP tool object, `inputSchema` included.
 use semantic_registry::mcp;
 
 let response: serde_json::Value = mcp_client.list_tools().await?;
-for entry in mcp::parse_tools_list(&response) {
-    registry.register(entry).await?;
-}
+registry.sync(mcp::parse_tools_list(&response), OnMissing::Remove).await?;
 ```
 
 **Exposing search.** Instead of handing the model every tool, hand it one:
