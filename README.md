@@ -775,9 +775,11 @@ as given: wrap your `Embedder` if the model needs a prefix on them.
 
 ## Limits
 
-- **Feedback is not atomic.** Reading, evicting and appending are separate
-  store calls; concurrent feedback on the same entry can briefly exceed the
-  cap.
+- **One registry coordinates its own calls.** Feedback, `register` and
+  `remove` on the same entry run one at a time, so concurrent feedback evicts
+  and reports consistently; different entries proceed in parallel. Several
+  registries or processes sharing one store are not coordinated with each
+  other.
 - **LRU history is in memory**, and restarts empty.
 - **`JsonStore` rewrites the whole file** on each change: fine for hundreds
   of entries, not for a write-heavy service.

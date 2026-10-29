@@ -19,6 +19,7 @@ pub struct SemanticRegistry<P> {
     formatter: Box<dyn Formatter<P>>,
     config: RegistryConfig,
     usage: UsageTracker,
+    locks: EntryLocks,
 }
 
 impl<P: Payload> SemanticRegistry<P> {
@@ -36,6 +37,7 @@ impl<P: Payload> SemanticRegistry<P> {
             formatter: Box::new(DefaultFormatter),
             config: RegistryConfig::default(),
             usage: UsageTracker::default(),
+            locks: EntryLocks::default(),
         }
     }
 
@@ -73,6 +75,8 @@ impl<P: Payload> SemanticRegistry<P> {
     /// Replacing an entry also replaces its examples, including those learned through
     /// feedback.
     pub async fn register(&self, entry: Entry<P>) -> Result<()> {
+        let lock = self.locks.get(&entry.id);
+        let _guard = lock.lock().await;
         let chunks = self.formatter.format(&entry);
         let mut known = self.previous_vectors(&entry.id).await?;
 
@@ -95,6 +99,8 @@ impl<P: Payload> SemanticRegistry<P> {
 
     /// Removes the entry, its examples and their usage history. Returns whether it existed.
     pub async fn remove(&self, id: &str) -> Result<bool> {
+        let lock = self.locks.get(id);
+        let _guard = lock.lock().await;
         let removed = self.store.remove(id).await?;
         self.usage.forget_entry(id);
         Ok(removed)
@@ -131,8 +137,9 @@ impl<P: Payload> SemanticRegistry<P> {
     /// Learns from a choice: on success the query becomes an example of the chosen entry,
     /// on correction an example of the right one, behind the guards of [`RegistryConfig`].
     ///
-    /// Reading, evicting and appending are separate store calls: concurrent feedback on the
-    /// same entry can briefly exceed `max_examples_per_entry`.
+    /// Feedback, [`register`](Self::register) and [`remove`](Self::remove) on the same entry
+    /// run one at a time within this registry; different entries proceed in parallel. Several
+    /// registries (or processes) sharing one store are not coordinated.
     pub async fn record_feedback(
         &self,
         user_query: &str,
@@ -148,6 +155,11 @@ impl<P: Payload> SemanticRegistry<P> {
         if config.max_examples_per_entry == 0 {
             return Ok(FeedbackDecision::Full);
         }
+
+        // Read, evict and append as one step for this entry: concurrent feedback on it
+        // waits instead of evicting from a stale snapshot (#16)
+        let lock = self.locks.get(target_id);
+        let _guard = lock.lock().await;
 
         let entry = match self.store.get(target_id).await? {
             Some(e) => e,
@@ -273,5 +285,23 @@ impl UsageTracker {
             .enumerate()
             .min_by_key(|(_, ex)| used.and_then(|u| u.get(ex.as_str())).copied().unwrap_or(0))
             .map_or(0, |(i, _)| i)
+    }
+}
+
+/// One async lock per entry id, so operations on the same entry run one at a time.
+///
+/// Locks are created on first use and kept: dropping one while a task still waits on it
+/// would let a newcomer take a fresh lock and run alongside that task. One small lock per
+/// id ever used is the cost.
+#[derive(Default)]
+struct EntryLocks(Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
+
+impl EntryLocks {
+    fn get(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks.entry(id.to_string()).or_default().clone()
     }
 }
