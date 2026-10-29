@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 Maintained by [release-plz](https://release-plz.dev/) from
 [conventional commits](https://www.conventionalcommits.org/).
 
+## [0.2.0](https://github.com/Lsh0x/semantic-registry/compare/semantic-registry-v0.1.0...semantic-registry-v0.2.0) - 2026-10-29
+
+### Added
+
+- *(mcp)* search_definition for any search meta-tool ([#12](https://github.com/Lsh0x/semantic-registry/pull/12))
+- [**breaking**] remove entries, batch embeddings, reuse unchanged vectors ([#10](https://github.com/Lsh0x/semantic-registry/pull/10))
+
 ## [0.1.0](https://github.com/Lsh0x/semantic-registry/releases/tag/semantic-registry-v0.1.0) - 2026-10-29
 
 First release, generalized from [`tools-rag`](https://crates.io/crates/tools-rag)
