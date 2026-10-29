@@ -177,6 +177,37 @@ impl FeedbackDecision {
     }
 }
 
+/// What [`SemanticRegistry::sync`](crate::registry::SemanticRegistry::sync) does with stored
+/// entries that the incoming list no longer contains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum OnMissing {
+    /// Remove them, their examples and their usage history.
+    #[default]
+    Remove,
+    /// Keep them untouched and list them in [`SyncReport::missing`]: for sources that list
+    /// only part of their entries, or callers that decide later (mark them stale, ask a person).
+    Keep,
+}
+
+/// What a sync did, entry ids in the order they were handled.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SyncReport {
+    /// New entries, registered.
+    pub added: Vec<String>,
+    /// Known entries whose text, payload or examples changed. Their stored examples, learned
+    /// ones included, are kept.
+    pub updated: Vec<String>,
+    /// Known entries identical to the incoming version: nothing was embedded or written.
+    pub unchanged: Vec<String>,
+    /// Stored entries in scope that the incoming list no longer contains, removed
+    /// ([`OnMissing::Remove`]).
+    pub removed: Vec<String>,
+    /// Same, kept ([`OnMissing::Keep`]).
+    pub missing: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

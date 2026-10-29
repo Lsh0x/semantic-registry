@@ -32,7 +32,7 @@ pub mod prelude {
     pub use crate::registry::SemanticRegistry;
     pub use crate::traits::{Embedder, EntryStore, Formatter, Payload, Retriever};
     pub use crate::types::{
-        Entry, EvictionPolicy, FeedbackDecision, FeedbackOutcome, RegistryConfig, ScoringStrategy,
-        SearchResult,
+        Entry, EvictionPolicy, FeedbackDecision, FeedbackOutcome, OnMissing, RegistryConfig,
+        ScoringStrategy, SearchResult, SyncReport,
     };
 }

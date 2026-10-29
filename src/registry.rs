@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -8,7 +8,8 @@ use crate::retriever::{cosine_similarity, CosineRetriever};
 use crate::store::InMemoryStore;
 use crate::traits::{Embedder, EntryStore, Formatter, Payload, Retriever};
 use crate::types::{
-    Entry, EvictionPolicy, FeedbackDecision, FeedbackOutcome, RegistryConfig, SearchResult,
+    Entry, EvictionPolicy, FeedbackDecision, FeedbackOutcome, OnMissing, RegistryConfig,
+    SearchResult, SyncReport,
 };
 
 /// Entries searched by semantic similarity, which learn from feedback.
@@ -77,6 +78,11 @@ impl<P: Payload> SemanticRegistry<P> {
     pub async fn register(&self, entry: Entry<P>) -> Result<()> {
         let lock = self.locks.get(&entry.id);
         let _guard = lock.lock().await;
+        self.insert_locked(entry).await
+    }
+
+    /// `register` for a caller already holding the entry's lock
+    async fn insert_locked(&self, entry: Entry<P>) -> Result<()> {
         let chunks = self.formatter.format(&entry);
         let mut known = self.previous_vectors(&entry.id).await?;
 
@@ -101,9 +107,92 @@ impl<P: Payload> SemanticRegistry<P> {
     pub async fn remove(&self, id: &str) -> Result<bool> {
         let lock = self.locks.get(id);
         let _guard = lock.lock().await;
+        self.remove_locked(id).await
+    }
+
+    /// `remove` for a caller already holding the entry's lock
+    async fn remove_locked(&self, id: &str) -> Result<bool> {
         let removed = self.store.remove(id).await?;
         self.usage.forget_entry(id);
         Ok(removed)
+    }
+
+    /// Makes the registry match a source's current list of entries, keeping what was learned.
+    ///
+    /// - An unknown id is registered.
+    /// - A known id takes the incoming `text` and payload and **keeps its stored examples**,
+    ///   learned ones included; incoming examples it does not have yet are appended. Only
+    ///   changed chunks are embedded. An identical entry is left untouched.
+    /// - A stored entry the list no longer contains is removed or kept, per `on_missing`.
+    ///
+    /// Every stored entry is considered part of the source: when one registry holds several
+    /// sources, use [`sync_scoped`](Self::sync_scoped). If an id appears twice in `entries`,
+    /// the last one wins. Examples removed from the source stay: remove them by hand.
+    pub async fn sync(&self, entries: Vec<Entry<P>>, on_missing: OnMissing) -> Result<SyncReport>
+    where
+        P: PartialEq,
+    {
+        self.sync_scoped(entries, on_missing, |_| true).await
+    }
+
+    /// [`sync`](Self::sync) for one source among several: only stored entries for which
+    /// `in_scope` returns `true` can be reported missing, removed or kept. Incoming entries are
+    /// handled whatever the scope.
+    pub async fn sync_scoped<F>(
+        &self,
+        entries: Vec<Entry<P>>,
+        on_missing: OnMissing,
+        in_scope: F,
+    ) -> Result<SyncReport>
+    where
+        P: PartialEq,
+        F: Fn(&Entry<P>) -> bool + Send + Sync,
+    {
+        let mut report = SyncReport::default();
+        let incoming = last_occurrence_wins(entries);
+        let incoming_ids: HashSet<String> = incoming.iter().map(|e| e.id.clone()).collect();
+
+        for entry in incoming {
+            let id = entry.id.clone();
+            let lock = self.locks.get(&id);
+            let _guard = lock.lock().await;
+            match self.store.get(&id).await? {
+                None => {
+                    self.insert_locked(entry).await?;
+                    report.added.push(id);
+                }
+                Some(stored) => {
+                    let examples = merge_examples(&stored.examples, entry.examples);
+                    if stored.text == entry.text
+                        && stored.payload == entry.payload
+                        && stored.examples == examples
+                    {
+                        report.unchanged.push(id);
+                    } else {
+                        self.insert_locked(Entry { examples, ..entry }).await?;
+                        report.updated.push(id);
+                    }
+                }
+            }
+        }
+
+        for (stored, _) in self.store.list_all().await? {
+            if incoming_ids.contains(&stored.id) || !in_scope(&stored) {
+                continue;
+            }
+            match on_missing {
+                OnMissing::Keep => report.missing.push(stored.id),
+                OnMissing::Remove => {
+                    let lock = self.locks.get(&stored.id);
+                    let _guard = lock.lock().await;
+                    if self.remove_locked(&stored.id).await? {
+                        report.removed.push(stored.id);
+                    }
+                }
+            }
+        }
+
+        Ok(report)
     }
 
     /// Vectors of the stored version of an entry, keyed by chunk text
@@ -304,4 +393,31 @@ impl EntryLocks {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         locks.entry(id.to_string()).or_default().clone()
     }
+}
+
+/// Keeps the last entry for each id, in the order of their first appearance
+fn last_occurrence_wins<P>(entries: Vec<Entry<P>>) -> Vec<Entry<P>> {
+    let mut position: HashMap<String, usize> = HashMap::new();
+    let mut unique: Vec<Entry<P>> = Vec::new();
+    for entry in entries {
+        match position.get(&entry.id) {
+            Some(&i) => unique[i] = entry,
+            None => {
+                position.insert(entry.id.clone(), unique.len());
+                unique.push(entry);
+            }
+        }
+    }
+    unique
+}
+
+/// Stored examples first, in order, then incoming ones not already there
+fn merge_examples(stored: &[String], incoming: Vec<String>) -> Vec<String> {
+    let mut merged = stored.to_vec();
+    for example in incoming {
+        if !merged.contains(&example) {
+            merged.push(example);
+        }
+    }
+    merged
 }
