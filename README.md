@@ -55,7 +55,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 | *(none)* | Registry, stores, retriever, feedback loop | `serde`, `serde_json`, `async-trait`, `thiserror`, `tokio` (`fs`) |
 | `candle` | `CandleEmbedder`: all-MiniLM-L6-v2 on CPU, no API key | candle, tokenizers, hf-hub |
 | `cache` | `CachedEmbedder`: embedding cache over [tiercache](https://crates.io/crates/tiercache) | tiercache (no dependencies) |
-| `mcp` | Ingest MCP `tools/list`, the `search_tools` definition | none |
+| `mcp` | Ingest MCP `tools/list`, search meta-tool definitions (`search_tools`…) | none |
 
 No feature is enabled by default. Without `candle`, bring your own
 [`Embedder`](#your-own-embedder).
@@ -677,6 +677,12 @@ async fn handle_search_tools(
     Ok(json!({ "tools": tools }))
 }
 ```
+
+The same applies to anything the *model* looks up mid-conversation, such as
+a specialist to delegate to: `mcp::search_definition("find_agent", "…")`
+builds the definition of any search meta-tool. When your code chooses, as for
+[prompts](#example-picking-a-prompt), call `registry.search` directly: no
+meta-tool is needed.
 
 The model then calls the tools it found. In an MCP server, either add them to
 your `tools/list` and send `notifications/tools/list_changed`, or expose a

@@ -49,23 +49,35 @@ pub fn tool_text(name: &str, description: &str, input_schema: &Value) -> String 
     text
 }
 
-/// MCP definition of the `search_tools` tool, to declare in an MCP server or agent loop
-/// instead of the full tool list.
-pub fn search_tools_definition() -> Value {
+/// MCP definition of a search meta-tool with a single `query` argument.
+///
+/// Use it when the model, not your code, decides what to look up: `search_tools` for MCP
+/// tools, `find_agent` to pick a specialist, `search_skills`… Answer its calls with
+/// [`SemanticRegistry::search`](crate::SemanticRegistry::search).
+pub fn search_definition(name: &str, description: &str) -> Value {
     json!({
-        "name": "search_tools",
-        "description": "Search for available tools dynamically based on user intent.",
+        "name": name,
+        "description": description,
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Natural language query describing what tool or action is needed"
+                    "description": "Natural language description of what is needed"
                 }
             },
             "required": ["query"]
         }
     })
+}
+
+/// MCP definition of the `search_tools` tool, to declare in an MCP server or agent loop
+/// instead of the full tool list. Shortcut for [`search_definition`].
+pub fn search_tools_definition() -> Value {
+    search_definition(
+        "search_tools",
+        "Search for available tools dynamically based on user intent.",
+    )
 }
 
 #[cfg(test)]
@@ -120,6 +132,15 @@ mod tests {
             tool_text("get_weather", "Fetch weather", &schema),
             "get_weather: Fetch weather | Parameters: city (City name), units"
         );
+    }
+
+    #[test]
+    fn search_definition_names_the_tool_and_requires_a_query() {
+        let def = search_definition("find_agent", "Pick the specialist for a request.");
+        assert_eq!(def["name"], "find_agent");
+        assert_eq!(def["description"], "Pick the specialist for a request.");
+        assert_eq!(def["inputSchema"]["required"], json!(["query"]));
+        assert_eq!(def["inputSchema"]["properties"]["query"]["type"], "string");
     }
 
     #[test]
