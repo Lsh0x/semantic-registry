@@ -30,6 +30,7 @@ hands the payload back.
 
 - [Install](#install)
 - [Quick start](#quick-start)
+- [Bring your own parts](#bring-your-own-parts)
 - [Entries and payloads](#entries-and-payloads)
 - [Learning from feedback](#learning-from-feedback)
 - [Configuration](#configuration)
@@ -115,6 +116,78 @@ convert_currency   0.165  matched example: Some(0)
 Each hit carries the whole `Entry`, payload included (`hit.entry.payload`).
 `matched_example` is the index in `entry.examples` of the chunk that won, or
 `None` when the canonical `text` scored best.
+
+## Bring your own parts
+
+The quick start uses the built-in parts, but each one is a trait you can
+replace: plug in the embedding API you already pay for, the database you
+already run, or a real search engine.
+
+| Part | Trait | Built-in | Replace it with |
+|---|---|---|---|
+| Embedding model | `Embedder` | `CandleEmbedder`, `CachedEmbedder` | OpenAI, Ollama, any HTTP API, another local model |
+| Storage | `EntryStore<P>` | `InMemoryStore`, `JsonStore` | Postgres, SQLite, Redis… |
+| Search | `Retriever<P>` | `CosineRetriever` | Meilisearch, Qdrant, pgvector… |
+| Text to embed | `Formatter<P>` | `DefaultFormatter` | Model prefixes, fields from the payload |
+
+**Your own embedder** is one method. Override `embed_batch` too when your API
+takes several texts per request: `register` sends all of an entry's new chunks
+at once.
+
+```rust
+use async_trait::async_trait;
+use semantic_registry::error::{Error, Result};
+use semantic_registry::traits::Embedder;
+
+struct ApiEmbedder {
+    client: MyHttpClient,
+}
+
+#[async_trait]
+impl Embedder for ApiEmbedder {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        self.client
+            .embeddings(text)
+            .await
+            .map_err(|e| Error::EmbeddingFailed(e.to_string()))
+    }
+
+    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.client
+            .embeddings_batch(texts)
+            .await
+            .map_err(|e| Error::EmbeddingFailed(e.to_string()))
+    }
+}
+
+// Same registry as in the quick start, with your model
+let embedder = Arc::new(ApiEmbedder { client });
+let registry: SemanticRegistry<Value> = SemanticRegistry::in_memory(embedder);
+```
+
+**Your own storage and search** go through `SemanticRegistry::new`. Your
+database with the built-in search:
+
+```rust
+let store = Arc::new(PostgresStore::connect(&database_url).await?); // impl EntryStore<Value>
+let retriever = Arc::new(CosineRetriever::new(store.clone(), embedder.clone()));
+let registry = SemanticRegistry::new(store, embedder, retriever);
+```
+
+A backend that does both, like a search engine storing vectors, implements
+both traits and is passed twice:
+
+```rust
+let engine = Arc::new(MeiliBackend {
+    client,
+    embedder: embedder.clone(),
+});
+let registry = SemanticRegistry::new(engine.clone(), embedder, engine);
+```
+
+The feedback loop, the guards and the cache work the same whatever the
+parts. [Plugging in an external backend](#plugging-in-an-external-backend)
+walks through a complete Meilisearch implementation.
 
 ## Entries and payloads
 
@@ -404,32 +477,9 @@ A failing cache level never fails an embedding: it counts as a miss.
 
 ### Your own embedder
 
-Any API or model works. Implement one method:
-
-```rust
-use async_trait::async_trait;
-use semantic_registry::error::{Error, Result};
-use semantic_registry::traits::Embedder;
-
-struct ApiEmbedder {
-    client: MyHttpClient,
-}
-
-#[async_trait]
-impl Embedder for ApiEmbedder {
-    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        self.client
-            .embeddings(text)
-            .await
-            .map_err(|e| Error::EmbeddingFailed(e.to_string()))
-    }
-}
-```
-
-`register` sends all of an entry's new chunks to `embed_batch` at once. Its
-default calls `embed` once per text; override it when your API or model takes
-a batch. `CandleEmbedder` does: 64 texts embed in 61 ms instead of 461 ms on
-an M-series CPU, with the same vectors as one by one.
+See [Bring your own parts](#bring-your-own-parts) for an implementation.
+`CandleEmbedder` overrides `embed_batch`: 64 texts embed in 61 ms instead of
+461 ms on an M-series CPU, with the same vectors as one by one.
 
 Every entry and query must go through the same model: vectors from
 different models are not comparable.
@@ -489,7 +539,10 @@ know about `CosineRetriever`. A search engine that stores vectors can take
 over both: implement the two traits on one type and pass it twice.
 
 ```rust
-let backend = Arc::new(MeiliBackend { client, embedder: embedder.clone() });
+let backend = Arc::new(MeiliBackend {
+    client,
+    embedder: embedder.clone(),
+});
 let registry = SemanticRegistry::new(backend.clone(), embedder, backend);
 ```
 
