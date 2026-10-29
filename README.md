@@ -30,8 +30,9 @@ hands the payload back.
 
 - [Install](#install)
 - [Quick start](#quick-start)
-- [Entries and payloads](#entries-and-payloads)
 - [Learning from feedback](#learning-from-feedback)
+- [Bring your own parts](#bring-your-own-parts)
+- [Entries and payloads](#entries-and-payloads)
 - [Configuration](#configuration)
 - [Scoring](#scoring)
 - [Embedders](#embedders)
@@ -115,79 +116,6 @@ convert_currency   0.165  matched example: Some(0)
 Each hit carries the whole `Entry`, payload included (`hit.entry.payload`).
 `matched_example` is the index in `entry.examples` of the chunk that won, or
 `None` when the canonical `text` scored best.
-
-## Entries and payloads
-
-```rust
-pub struct Entry<P> {
-    pub id: String,            // unique key: a tool name, a skill id, a table name
-    pub text: String,          // the canonical description, embedded as is
-    pub examples: Vec<String>, // phrasings users might type; feedback adds more
-    pub payload: P,            // yours: never read by the library
-}
-```
-
-`P` is any `Clone + Send + Sync + 'static` type: your own struct, a
-`serde_json::Value`, or `()` when the id is enough. `JsonStore` also needs it
-to be `Serialize + DeserializeOwned`.
-
-Examples matter: they are embedded one by one, so an entry is found even when
-the query shares no words with its `text`. Seed a few by hand, or generate
-them with an LLM (see `examples/llm_example_gen.rs`).
-
-**Several collections.** The registry knows nothing about kinds. Keeping tools
-and skills apart is two registries, each with its own config; ranking them
-together is one registry over an enum payload. Share the embedder between
-registries so the model loads once and the cache serves both:
-
-```rust
-let tools: SemanticRegistry<ToolSpec> = SemanticRegistry::in_memory(embedder.clone());
-let skills: SemanticRegistry<SkillSpec> = SemanticRegistry::in_memory(embedder.clone());
-```
-
-### Example: picking a prompt
-
-[`examples/prompt_routing.rs`](examples/prompt_routing.rs) keeps prompt
-templates in the payload, picks one per request, and falls back to a generic
-prompt when nothing scores above `min_search_score`:
-
-```rust
-#[derive(Clone, Debug)]
-struct Prompt {
-    system: &'static str,
-    template: &'static str,
-}
-
-let registry: SemanticRegistry<Prompt> =
-    SemanticRegistry::in_memory(embedder).with_config(RegistryConfig {
-        min_search_score: 0.30, // below this, no template fits
-        ..RegistryConfig::default()
-    });
-
-match registry.search(request, 1).await?.into_iter().next() {
-    Some(hit) => println!("{}", hit.entry.payload.render(request)),
-    None => println!("{}", FALLBACK.render(request)),
-}
-```
-
-```text
-is this rust function safe? fn get(v: &[u8], i: usize) -> u8 { v[i] }
-  -> code_review (0.437)
-what does SELECT name FROM users WHERE age > 30 GROUP BY name do
-  -> explain_sql (0.404)
-give me a commit message, I renamed the crate and its types
-  -> commit_message (0.533)
-what's a good name for a cat
-  -> no template fits, fallback
-
-why is this query slow
-  picked explain_sql, corrected to code_review: Added { evicted: [] }
-  "why is this query slow" -> code_review (1.000)
-  "how do I make this query faster" -> code_review (0.895)
-```
-
-The last lines show a correction at work: once the user says a performance
-question belongs to `code_review`, close phrasings follow it.
 
 ## Learning from feedback
 
@@ -316,6 +244,151 @@ that returns an entry through one of its examples marks that example as used.
 A newly added example counts as used. History lives in memory, so after a
 restart the policy behaves like `Fifo` until searches build it back.
 
+## Bring your own parts
+
+The quick start uses the built-in parts, but each one is a trait you can
+replace: plug in the embedding API you already pay for, the database you
+already run, or a real search engine.
+
+| Part | Trait | Built-in | Replace it with |
+|---|---|---|---|
+| Embedding model | `Embedder` | `CandleEmbedder`, `CachedEmbedder` | OpenAI, Ollama, any HTTP API, another local model |
+| Storage | `EntryStore<P>` | `InMemoryStore`, `JsonStore` | Postgres, SQLite, Redis… |
+| Search | `Retriever<P>` | `CosineRetriever` | Meilisearch, Qdrant, pgvector… |
+| Text to embed | `Formatter<P>` | `DefaultFormatter` | Model prefixes, fields from the payload |
+
+**Your own embedder** is one method. Override `embed_batch` too when your API
+takes several texts per request: `register` sends all of an entry's new chunks
+at once.
+
+```rust
+use async_trait::async_trait;
+use semantic_registry::error::{Error, Result};
+use semantic_registry::traits::Embedder;
+
+struct ApiEmbedder {
+    client: MyHttpClient,
+}
+
+#[async_trait]
+impl Embedder for ApiEmbedder {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        self.client
+            .embeddings(text)
+            .await
+            .map_err(|e| Error::EmbeddingFailed(e.to_string()))
+    }
+
+    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.client
+            .embeddings_batch(texts)
+            .await
+            .map_err(|e| Error::EmbeddingFailed(e.to_string()))
+    }
+}
+
+// Same registry as in the quick start, with your model
+let embedder = Arc::new(ApiEmbedder { client });
+let registry: SemanticRegistry<Value> = SemanticRegistry::in_memory(embedder);
+```
+
+**Your own storage and search** go through `SemanticRegistry::new`. Your
+database with the built-in search:
+
+```rust
+let store = Arc::new(PostgresStore::connect(&database_url).await?); // impl EntryStore<Value>
+let retriever = Arc::new(CosineRetriever::new(store.clone(), embedder.clone()));
+let registry = SemanticRegistry::new(store, embedder, retriever);
+```
+
+A backend that does both, like a search engine storing vectors, implements
+both traits and is passed twice:
+
+```rust
+let engine = Arc::new(MeiliBackend {
+    client,
+    embedder: embedder.clone(),
+});
+let registry = SemanticRegistry::new(engine.clone(), embedder, engine);
+```
+
+The feedback loop, the guards and the cache work the same whatever the
+parts. [Plugging in an external backend](#plugging-in-an-external-backend)
+walks through a complete Meilisearch implementation.
+
+## Entries and payloads
+
+```rust
+pub struct Entry<P> {
+    pub id: String,            // unique key: a tool name, a skill id, a table name
+    pub text: String,          // the canonical description, embedded as is
+    pub examples: Vec<String>, // phrasings users might type; feedback adds more
+    pub payload: P,            // yours: never read by the library
+}
+```
+
+`P` is any `Clone + Send + Sync + 'static` type: your own struct, a
+`serde_json::Value`, or `()` when the id is enough. `JsonStore` also needs it
+to be `Serialize + DeserializeOwned`.
+
+Examples matter: they are embedded one by one, so an entry is found even when
+the query shares no words with its `text`. Seed a few by hand, or generate
+them with an LLM (see `examples/llm_example_gen.rs`).
+
+**Several collections.** The registry knows nothing about kinds. Keeping tools
+and skills apart is two registries, each with its own config; ranking them
+together is one registry over an enum payload. Share the embedder between
+registries so the model loads once and the cache serves both:
+
+```rust
+let tools: SemanticRegistry<ToolSpec> = SemanticRegistry::in_memory(embedder.clone());
+let skills: SemanticRegistry<SkillSpec> = SemanticRegistry::in_memory(embedder.clone());
+```
+
+### Example: picking a prompt
+
+[`examples/prompt_routing.rs`](examples/prompt_routing.rs) keeps prompt
+templates in the payload, picks one per request, and falls back to a generic
+prompt when nothing scores above `min_search_score`:
+
+```rust
+#[derive(Clone, Debug)]
+struct Prompt {
+    system: &'static str,
+    template: &'static str,
+}
+
+let registry: SemanticRegistry<Prompt> =
+    SemanticRegistry::in_memory(embedder).with_config(RegistryConfig {
+        min_search_score: 0.30, // below this, no template fits
+        ..RegistryConfig::default()
+    });
+
+match registry.search(request, 1).await?.into_iter().next() {
+    Some(hit) => println!("{}", hit.entry.payload.render(request)),
+    None => println!("{}", FALLBACK.render(request)),
+}
+```
+
+```text
+is this rust function safe? fn get(v: &[u8], i: usize) -> u8 { v[i] }
+  -> code_review (0.437)
+what does SELECT name FROM users WHERE age > 30 GROUP BY name do
+  -> explain_sql (0.404)
+give me a commit message, I renamed the crate and its types
+  -> commit_message (0.533)
+what's a good name for a cat
+  -> no template fits, fallback
+
+why is this query slow
+  picked explain_sql, corrected to code_review: Added { evicted: [] }
+  "why is this query slow" -> code_review (1.000)
+  "how do I make this query faster" -> code_review (0.895)
+```
+
+The last lines show a correction at work: once the user says a performance
+question belongs to `code_review`, close phrasings follow it.
+
 ## Configuration
 
 `RegistryConfig` holds the whole policy; set it once with `with_config`.
@@ -404,32 +477,9 @@ A failing cache level never fails an embedding: it counts as a miss.
 
 ### Your own embedder
 
-Any API or model works. Implement one method:
-
-```rust
-use async_trait::async_trait;
-use semantic_registry::error::{Error, Result};
-use semantic_registry::traits::Embedder;
-
-struct ApiEmbedder {
-    client: MyHttpClient,
-}
-
-#[async_trait]
-impl Embedder for ApiEmbedder {
-    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        self.client
-            .embeddings(text)
-            .await
-            .map_err(|e| Error::EmbeddingFailed(e.to_string()))
-    }
-}
-```
-
-`register` sends all of an entry's new chunks to `embed_batch` at once. Its
-default calls `embed` once per text; override it when your API or model takes
-a batch. `CandleEmbedder` does: 64 texts embed in 61 ms instead of 461 ms on
-an M-series CPU, with the same vectors as one by one.
+See [Bring your own parts](#bring-your-own-parts) for an implementation.
+`CandleEmbedder` overrides `embed_batch`: 64 texts embed in 61 ms instead of
+461 ms on an M-series CPU, with the same vectors as one by one.
 
 Every entry and query must go through the same model: vectors from
 different models are not comparable.
@@ -489,7 +539,10 @@ know about `CosineRetriever`. A search engine that stores vectors can take
 over both: implement the two traits on one type and pass it twice.
 
 ```rust
-let backend = Arc::new(MeiliBackend { client, embedder: embedder.clone() });
+let backend = Arc::new(MeiliBackend {
+    client,
+    embedder: embedder.clone(),
+});
 let registry = SemanticRegistry::new(backend.clone(), embedder, backend);
 ```
 
