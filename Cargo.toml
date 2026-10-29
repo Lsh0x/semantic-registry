@@ -10,7 +10,7 @@ documentation = "https://docs.rs/tools-rag"
 readme = "README.md"
 keywords = ["rag", "llm", "tools", "embeddings", "mcp"]
 categories = ["text-processing", "science"]
-exclude = [".github/", "**/*.un~"]
+exclude = [".github/", "assets/", "**/*.un~"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -29,8 +29,12 @@ candle-transformers = { version = "0.11", optional = true }
 hf-hub = { version = "0.5", features = ["tokio"], optional = true }
 tokenizers = { version = "0.23", optional = true }
 
+# Cache d'embeddings optionnel (aucune dépendance transitive)
+tiercache = { version = "0.1", optional = true }
+
 [features]
 default = []
+cache = ["dep:tiercache"]
 candle = [
     "tokio/rt",
     "dep:candle-core",
@@ -50,7 +54,7 @@ required-features = ["candle"]
 
 [[example]]
 name = "feedback"
-required-features = ["candle"]
+required-features = ["candle", "cache"]
 
 [[example]]
 name = "persistent_store"

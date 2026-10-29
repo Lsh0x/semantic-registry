@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tools_rag::defaults::cosine_retriever::CosineRetriever;
 use tools_rag::defaults::memory_store::InMemoryToolStore;
-use tools_rag::embedder::CandleEmbedder;
+use tools_rag::embedder::{CachedEmbedder, CandleEmbedder};
 use tools_rag::formatter::DefaultToolFormatter;
 use tools_rag::registry::ToolRegistry;
 use tools_rag::types::{FeedbackOutcome, RegistryConfig, ToolDefinition};
@@ -11,7 +11,12 @@ use tools_rag::types::{FeedbackOutcome, RegistryConfig, ToolDefinition};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("1. Initialisation de l'Embedder Candle...");
-    let embedder = Arc::new(CandleEmbedder::minilm_v2().await?);
+    // Le cache évite de ré-embedder la requête entre search() et record_feedback()
+    let embedder = Arc::new(CachedEmbedder::new(
+        Arc::new(CandleEmbedder::minilm_v2().await?),
+        "all-MiniLM-L6-v2",
+        1024,
+    ));
     let store = Arc::new(InMemoryToolStore::new());
     let retriever = Arc::new(CosineRetriever::new(store.clone(), embedder.clone()));
     // Configuration personnalisée des garde-fous

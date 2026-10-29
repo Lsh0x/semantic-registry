@@ -2246,6 +2246,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tiercache"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "513874ea3f0088fa13cd50563e08849835cb5e59fdd08d55dbdbeea1c7f96fd5"
+
+[[package]]
 name = "time"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2425,6 +2431,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tiercache",
  "tokenizers 0.23.2",
  "tokio",
 ]
