@@ -6,23 +6,34 @@ Maintained by [release-plz](https://release-plz.dev/) from
 
 ## [0.2.0](https://github.com/Lsh0x/tools-rag/compare/v0.1.0...v0.2.0) - 2026-10-29
 
-### Added
-
-- CachedEmbedder backed by tiercache (feature `cache`)
-- [**breaking**] least-recently-used eviction for learned examples
-
 ### Fixed
 
-- lower default min_feedback_score to 0.30
-- clamp cosine similarity to [-1, 1]
-- *(candle)* stop mean-pooling over padding tokens
+- **`CandleEmbedder` returned near-identical vectors.** The all-MiniLM-L6-v2
+  tokenizer pads every input to 128 tokens and mean pooling included the
+  padding, so unrelated sentences scored around 0.75. Padding is now
+  disabled: unrelated tools drop to ~0.15, correct matches sit at 0.45-0.55.
+  Embeddings persisted with 0.1.0 (`JsonToolStore`) must be recomputed.
+- Default `min_feedback_score` lowered from 0.40 to 0.30, calibrated on the
+  corrected embeddings
+- Cosine similarity clamped to [-1, 1]
 
-### Other
+### Added
 
-- clarify that tools-rag is not an MCP server
-- show how to plug an external store/retriever (Meilisearch)
-- full README with feedback + cache example and every feature
-- architecture diagram, LRU and cache in README, curated 0.1.0 changelog
+- `EvictionPolicy::LeastRecentlyUsed`: evicts the example that has gone
+  longest without winning a search
+- `SearchResult::matched_example`: index of the example that won the search
+- `CachedEmbedder` over [tiercache](https://crates.io/crates/tiercache)
+  (feature `cache`), so `record_feedback` reuses the vector computed by
+  `search`
+- README: architecture diagram, complete feedback example, external backend
+  guide (Meilisearch), MCP integration
+
+### Breaking
+
+- `SearchResult` has a new public field `matched_example`: struct literals
+  in custom `ToolRetriever`s must set it (`None` if unknown)
+- `EvictionPolicy` has a new variant: exhaustive `match`es need an arm for
+  `LeastRecentlyUsed`
 
 ## [0.1.0](https://github.com/Lsh0x/tools-rag/releases/tag/v0.1.0) - 2026-10-29
 
