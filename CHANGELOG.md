@@ -6,6 +6,20 @@ Maintained by [release-plz](https://release-plz.dev/) from
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/Lsh0x/tools-rag/releases/tag/v0.1.0) - 2026-10-29
+
+### Added
+
+- semantic tool registry with configurable feedback loop
+
+### Fixed
+
+- *(deps)* upgrade candle to 0.11, tokenizers to 0.23, hf-hub to 0.5
+
+### Other
+
+- add CI, cargo-deny, dependabot and release-plz
+
 ### Added
 
 - `ToolRegistry` with pluggable `Embedder`, `ToolStore`, `ToolRetriever` and
