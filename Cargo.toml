@@ -1,6 +1,6 @@
 [package]
 name = "tools-rag"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Semantic tool retrieval for LLM agents: embed tool definitions, search them by intent with MaxSim scoring, and learn from usage feedback."

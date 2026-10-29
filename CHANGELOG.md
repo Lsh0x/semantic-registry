@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 Maintained by [release-plz](https://release-plz.dev/) from
 [conventional commits](https://www.conventionalcommits.org/).
 
+## [0.2.0](https://github.com/Lsh0x/tools-rag/compare/v0.1.0...v0.2.0) - 2026-10-29
+
+### Added
+
+- CachedEmbedder backed by tiercache (feature `cache`)
+- [**breaking**] least-recently-used eviction for learned examples
+
+### Fixed
+
+- lower default min_feedback_score to 0.30
+- clamp cosine similarity to [-1, 1]
+- *(candle)* stop mean-pooling over padding tokens
+
+### Other
+
+- clarify that tools-rag is not an MCP server
+- show how to plug an external store/retriever (Meilisearch)
+- full README with feedback + cache example and every feature
+- architecture diagram, LRU and cache in README, curated 0.1.0 changelog
+
 ## [0.1.0](https://github.com/Lsh0x/tools-rag/releases/tag/v0.1.0) - 2026-10-29
 
 First release.
