@@ -6,7 +6,7 @@ use std::sync::RwLock;
 use tokio::fs;
 
 use crate::error::{Error, Result};
-use crate::store::memory::{append, remove, Record};
+use crate::store::memory::{append, remove, remove_entry, Record};
 use crate::traits::{EntryStore, Payload};
 use crate::types::Entry;
 
@@ -16,7 +16,8 @@ struct StoredRecord<P> {
     embeddings: Vec<Vec<f32>>,
 }
 
-/// Store persisté dans un fichier JSON, réécrit à chaque modification
+/// Entries persisted to a JSON file, rewritten on each change. Embeddings are stored too,
+/// so reloading recomputes nothing.
 pub struct JsonStore<P> {
     file_path: PathBuf,
     storage: RwLock<Vec<Record<P>>>,
@@ -27,6 +28,10 @@ fn poisoned(e: impl std::fmt::Display) -> Error {
 }
 
 impl<P: Payload + Serialize + DeserializeOwned> JsonStore<P> {
+    /// Loads the file if it exists, or starts empty. The file is created on the first change.
+    ///
+    /// # Errors
+    /// The file cannot be read, or is not a valid store.
     pub async fn load_or_create(path: impl Into<PathBuf>) -> Result<Self> {
         let file_path = path.into();
         let mut storage_vec = Vec::new();
@@ -93,6 +98,17 @@ impl<P: Payload + Serialize + DeserializeOwned> EntryStore<P> for JsonStore<P> {
             store.push((entry, embeddings));
         }
         self.save_to_disk().await
+    }
+
+    async fn remove(&self, id: &str) -> Result<bool> {
+        let removed = {
+            let mut store = self.storage.write().map_err(poisoned)?;
+            remove_entry(&mut store, id)
+        };
+        if removed {
+            self.save_to_disk().await?;
+        }
+        Ok(removed)
     }
 
     async fn get(&self, id: &str) -> Result<Option<Entry<P>>> {

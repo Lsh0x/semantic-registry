@@ -1,7 +1,7 @@
 use crate::traits::Formatter;
 use crate::types::Entry;
 
-/// Embarque `text` comme chunk canonique, puis chaque exemple tel quel
+/// Embeds `text` as the canonical chunk, then each example as is.
 pub struct DefaultFormatter;
 
 impl<P> Formatter<P> for DefaultFormatter {

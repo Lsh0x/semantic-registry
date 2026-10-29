@@ -1,13 +1,17 @@
+//! A placeholder embedder for tests.
+
 use crate::error::Result;
 use crate::traits::Embedder;
 use async_trait::async_trait;
 
-/// Embedder factice pour les tests unitaires et le développement local
+/// A constant vector for every text: for tests and wiring, useless for ranking.
 pub struct DummyEmbedder {
+    /// Length of the vectors returned.
     pub dimension: usize,
 }
 
 impl DummyEmbedder {
+    /// Vectors of `dimension` components.
     pub fn new(dimension: usize) -> Self {
         Self { dimension }
     }

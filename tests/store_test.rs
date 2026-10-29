@@ -27,9 +27,9 @@ async fn exercise_store(store: &dyn EntryStore<Payload>) {
         .await
         .unwrap();
     store.remove_example("t", 0).await.unwrap();
-    // Index hors bornes : ignoré
+    // Out-of-bounds index: ignored
     store.remove_example("t", 42).await.unwrap();
-    // Outil inconnu : ignoré
+    // Unknown entry: ignored
     store
         .append_example("missing", "x".into(), vec![9.0])
         .await
@@ -42,6 +42,12 @@ async fn exercise_store(store: &dyn EntryStore<Payload>) {
         store.get_embeddings("t").await.unwrap().unwrap(),
         vec![vec![0.0], vec![2.0], vec![3.0]]
     );
+    assert_eq!(store.list_all().await.unwrap().len(), 1);
+
+    store.insert(sample("other"), embeddings()).await.unwrap();
+    assert!(store.remove("other").await.unwrap());
+    assert!(!store.remove("other").await.unwrap());
+    assert!(store.get("other").await.unwrap().is_none());
     assert_eq!(store.list_all().await.unwrap().len(), 1);
 }
 

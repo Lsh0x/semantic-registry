@@ -4,11 +4,15 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
 use hf_hub::api::tokio::ApiBuilder;
 use std::sync::Arc;
-use tokenizers::Tokenizer;
+use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer};
 
 use crate::error::{Error, Result};
 use crate::traits::Embedder;
 
+/// Local sentence embeddings with [Candle](https://github.com/huggingface/candle), on CPU.
+///
+/// Batches are padded to their longest text and mean pooling ignores the padding, so a
+/// text gets the same vector alone or in a batch.
 #[derive(Clone)]
 pub struct CandleEmbedder {
     model: Arc<BertModel>,
@@ -17,9 +21,13 @@ pub struct CandleEmbedder {
 }
 
 impl CandleEmbedder {
-    /// Initialise le modèle 'all-MiniLM-L6-v2' depuis Hugging Face Hub (avec cache local)
+    /// Loads sentence-transformers/all-MiniLM-L6-v2 from the Hugging Face Hub, cached
+    /// locally after the first download: 384 dimensions, L2-normalized.
+    ///
+    /// # Errors
+    /// The model cannot be downloaded or loaded.
     pub async fn minilm_v2() -> Result<Self> {
-        // Contourne le bug reqwest/macOS en ignorant les proxies système mal formés
+        // Works around reqwest on macOS picking up malformed system proxy settings
         if std::env::var("HTTP_PROXY").map_or(true, |v| !v.starts_with("http"))
             && std::env::var("HTTPS_PROXY").map_or(true, |v| !v.starts_with("http"))
         {
@@ -53,9 +61,12 @@ impl CandleEmbedder {
 
         let mut tokenizer = Tokenizer::from_file(tokenizer_filename)
             .map_err(|e| Error::ParseError(e.to_string()))?;
-        // Le tokenizer.json de MiniLM complète à 128 tokens : sans masque dans le mean
-        // pooling, les [PAD] domineraient le vecteur et rapprocheraient toutes les phrases.
-        tokenizer.with_padding(None);
+        // MiniLM's tokenizer.json pads every input to 128 tokens. Pad batches to their
+        // longest text instead; the attention mask keeps padding out of the pooling.
+        tokenizer.with_padding(Some(PaddingParams {
+            strategy: PaddingStrategy::BatchLongest,
+            ..PaddingParams::default()
+        }));
 
         let device = Device::Cpu;
 
@@ -74,44 +85,57 @@ impl CandleEmbedder {
         })
     }
 
-    /// Extrait l'embedding par Mean Pooling + L2 Normalization
-    fn infer(&self, text: &str) -> Result<Vec<f32>> {
-        let tokens = self
+    /// Mean pooling over real tokens, then L2 normalization, for a whole batch
+    fn infer(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let encodings = self
             .tokenizer
-            .encode(text, true)
+            .encode_batch(texts.to_vec(), true)
             .map_err(|e| Error::EmbeddingFailed(e.to_string()))?;
 
-        let token_ids = tokens.get_ids();
-        let token_ids_tensor = Tensor::new(token_ids, &self.device)?.unsqueeze(0)?;
+        let ids: Vec<Tensor> = encodings
+            .iter()
+            .map(|e| Tensor::new(e.get_ids(), &self.device))
+            .collect::<candle_core::Result<_>>()?;
+        let masks: Vec<Tensor> = encodings
+            .iter()
+            .map(|e| Tensor::new(e.get_attention_mask(), &self.device))
+            .collect::<candle_core::Result<_>>()?;
+        let input_ids = Tensor::stack(&ids, 0)?;
+        let attention_mask = Tensor::stack(&masks, 0)?;
+        let token_type_ids = input_ids.zeros_like()?;
 
-        let token_type_ids = Tensor::zeros_like(&token_ids_tensor)?;
-
-        let embeddings = self
+        let hidden = self
             .model
-            .forward(&token_ids_tensor, &token_type_ids, None)?;
+            .forward(&input_ids, &token_type_ids, Some(&attention_mask))?;
 
-        let (_b_size, seq_len, _hidden_size) = embeddings.dims3()?;
+        // (batch, tokens, 1): 1.0 for real tokens, 0.0 for padding
+        let mask = attention_mask.to_dtype(hidden.dtype())?.unsqueeze(2)?;
+        let summed = hidden.broadcast_mul(&mask)?.sum(1)?;
+        let counts = mask.sum(1)?;
+        let mean = summed.broadcast_div(&counts)?;
 
-        let sum_embeddings = embeddings.sum(1)?;
-        let mean_pooled = (sum_embeddings / (seq_len as f64))?;
-
-        let norm = mean_pooled.sqr()?.sum_keepdim(1)?.sqrt()?;
-
-        let normalized = mean_pooled.broadcast_div(&norm)?;
-
-        let vec = normalized.squeeze(0)?.to_vec1::<f32>()?;
-
-        Ok(vec)
+        let norm = mean.sqr()?.sum_keepdim(1)?.sqrt()?;
+        Ok(mean.broadcast_div(&norm)?.to_vec2::<f32>()?)
     }
 }
 
 #[async_trait]
 impl Embedder for CandleEmbedder {
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        let embedder = self.clone();
-        let text = text.to_string();
+        let mut vectors = self.embed_batch(&[text.to_string()]).await?;
+        vectors
+            .pop()
+            .ok_or_else(|| Error::EmbeddingFailed("empty batch result".into()))
+    }
 
-        tokio::task::spawn_blocking(move || embedder.infer(&text))
+    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let embedder = self.clone();
+        let texts = texts.to_vec();
+
+        tokio::task::spawn_blocking(move || embedder.infer(&texts))
             .await
             .map_err(|e| Error::Internal(e.to_string()))?
     }

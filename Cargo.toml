@@ -22,20 +22,20 @@ serde_json = "1.0"
 thiserror = "2.0"
 tokio = { version = "1.0", features = ["fs"] }
 
-# Dépendances ML optionnelles
+# Optional ML stack (feature `candle`)
 candle-core = { version = "0.11", optional = true }
 candle-nn = { version = "0.11", optional = true }
 candle-transformers = { version = "0.11", optional = true }
 hf-hub = { version = "0.5", features = ["tokio"], optional = true }
 tokenizers = { version = "0.23", optional = true }
 
-# Cache d'embeddings optionnel (aucune dépendance transitive)
+# Optional embedding cache (no transitive dependencies)
 tiercache = { version = "0.1", optional = true }
 
 [features]
 default = []
 cache = ["dep:tiercache"]
-# Ingestion de `tools/list` et définition de `search_tools` (aucune dépendance)
+# `tools/list` ingestion and the `search_tools` definition (no dependencies)
 mcp = []
 candle = [
     "tokio/rt",
