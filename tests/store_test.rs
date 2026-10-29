@@ -91,3 +91,65 @@ async fn json_store_rejects_corrupted_file() {
 
     assert!(JsonStore::<Payload>::load_or_create(&path).await.is_err());
 }
+
+#[tokio::test]
+async fn json_store_persists_example_uses_on_flush() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("entries.json");
+
+    {
+        let store = JsonStore::<Payload>::load_or_create(&path).await.unwrap();
+        store.insert(sample("t"), embeddings()).await.unwrap();
+        store.record_example_use("t", "a", 42).await.unwrap();
+        store.record_example_use("t", "a", 7).await.unwrap(); // older: ignored
+        store.record_example_use("t", "gone", 9).await.unwrap(); // not an example
+        store.flush().await.unwrap();
+    }
+
+    let reloaded = JsonStore::<Payload>::load_or_create(&path).await.unwrap();
+    let uses = reloaded.example_uses("t").await.unwrap();
+    assert_eq!(uses.get("a"), Some(&42));
+    assert!(
+        !uses.contains_key("gone"),
+        "uses of non-examples are not written"
+    );
+}
+
+#[tokio::test]
+async fn json_store_writes_uses_with_the_next_change_without_flush() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("entries.json");
+
+    {
+        let store = JsonStore::<Payload>::load_or_create(&path).await.unwrap();
+        store.insert(sample("t"), embeddings()).await.unwrap();
+        store.record_example_use("t", "b", 5).await.unwrap();
+        // A later change writes the pending use too
+        store.insert(sample("other"), embeddings()).await.unwrap();
+    }
+
+    let reloaded = JsonStore::<Payload>::load_or_create(&path).await.unwrap();
+    assert_eq!(reloaded.example_uses("t").await.unwrap().get("b"), Some(&5));
+}
+
+#[tokio::test]
+async fn removing_an_entry_forgets_its_uses() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = JsonStore::<Payload>::load_or_create(dir.path().join("e.json"))
+        .await
+        .unwrap();
+    store.insert(sample("t"), embeddings()).await.unwrap();
+    store.record_example_use("t", "a", 3).await.unwrap();
+    store.remove("t").await.unwrap();
+    store.insert(sample("t"), embeddings()).await.unwrap();
+
+    assert!(store.example_uses("t").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn in_memory_store_persists_no_uses() {
+    let store = InMemoryStore::new();
+    store.insert(sample("t"), embeddings()).await.unwrap();
+    store.record_example_use("t", "a", 3).await.unwrap();
+    assert!(store.example_uses("t").await.unwrap().is_empty());
+}

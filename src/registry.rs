@@ -217,7 +217,10 @@ impl<P: Payload> SemanticRegistry<P> {
         results.retain(|r| r.score >= self.config.min_search_score);
         for r in &results {
             if let Some(example) = r.matched_example.and_then(|i| r.entry.examples.get(i)) {
-                self.usage.touch(&r.entry.id, example);
+                let at = self.usage.touch(&r.entry.id, example);
+                self.store
+                    .record_example_use(&r.entry.id, example, at)
+                    .await?;
             }
         }
         Ok(results)
@@ -288,6 +291,14 @@ impl<P: Payload> SemanticRegistry<P> {
         let mut examples = entry.examples;
         let mut embeddings = existing_embeddings;
         let mut evicted = Vec::new();
+        let persisted_uses = match config.eviction_policy {
+            EvictionPolicy::LeastRecentlyUsed
+                if examples.len() >= config.max_examples_per_entry =>
+            {
+                self.store.example_uses(target_id).await?
+            }
+            _ => HashMap::new(),
+        };
 
         while examples.len() >= config.max_examples_per_entry {
             let index = match config.eviction_policy {
@@ -297,7 +308,8 @@ impl<P: Payload> SemanticRegistry<P> {
                     most_redundant_with_base(&embeddings).min(examples.len() - 1)
                 }
                 EvictionPolicy::LeastRecentlyUsed => {
-                    self.usage.least_recently_used(target_id, &examples)
+                    self.usage
+                        .least_recently_used(target_id, &examples, &persisted_uses)
                 }
             };
             self.store.remove_example(target_id, index).await?;
@@ -313,7 +325,10 @@ impl<P: Payload> SemanticRegistry<P> {
         self.store
             .append_example(target_id, user_query.to_string(), query_embedding)
             .await?;
-        self.usage.touch(target_id, user_query);
+        let at = self.usage.touch(target_id, user_query);
+        self.store
+            .record_example_use(target_id, user_query, at)
+            .await?;
 
         Ok(FeedbackDecision::Added { evicted })
     }
@@ -332,7 +347,10 @@ fn most_redundant_with_base(embeddings: &[Vec<f32>]) -> usize {
         .map_or(0, |(i, _)| i)
 }
 
-/// Last use of each example (logical clock), per entry.
+/// Last use of each example, per entry, in microseconds since the Unix epoch.
+///
+/// The clock never goes backwards within a process, and stays comparable with uses a store
+/// persisted in an earlier run.
 #[derive(Default)]
 struct UsageTracker {
     clock: AtomicU64,
@@ -340,13 +358,35 @@ struct UsageTracker {
 }
 
 impl UsageTracker {
-    fn touch(&self, entry: &str, example: &str) {
-        let tick = self.clock.fetch_add(1, Ordering::Relaxed) + 1;
+    /// A time strictly later than any this tracker returned before
+    fn now(&self) -> u64 {
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX));
+        let mut previous = self.clock.load(Ordering::Relaxed);
+        loop {
+            let next = wall.max(previous + 1);
+            match self.clock.compare_exchange_weak(
+                previous,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return next,
+                Err(current) => previous = current,
+            }
+        }
+    }
+
+    /// Marks the example as used now, and returns that time
+    fn touch(&self, entry: &str, example: &str) -> u64 {
+        let at = self.now();
         if let Ok(mut map) = self.last_used.lock() {
             map.entry(entry.to_string())
                 .or_default()
-                .insert(example.to_string(), tick);
+                .insert(example.to_string(), at);
         }
+        at
     }
 
     fn forget_entry(&self, entry: &str) {
@@ -363,8 +403,14 @@ impl UsageTracker {
         }
     }
 
-    /// The example never used or used least recently; on a tie, the oldest.
-    fn least_recently_used(&self, entry: &str, examples: &[String]) -> usize {
+    /// The example never used or used least recently, from this run's uses and those the store
+    /// persisted; on a tie, the oldest.
+    fn least_recently_used(
+        &self,
+        entry: &str,
+        examples: &[String],
+        persisted: &HashMap<String, u64>,
+    ) -> usize {
         let Ok(map) = self.last_used.lock() else {
             return 0;
         };
@@ -372,7 +418,11 @@ impl UsageTracker {
         examples
             .iter()
             .enumerate()
-            .min_by_key(|(_, ex)| used.and_then(|u| u.get(ex.as_str())).copied().unwrap_or(0))
+            .min_by_key(|(_, ex)| {
+                let here = used.and_then(|u| u.get(ex.as_str())).copied();
+                let stored = persisted.get(ex.as_str()).copied();
+                here.max(stored).unwrap_or(0)
+            })
             .map_or(0, |(i, _)| i)
     }
 }

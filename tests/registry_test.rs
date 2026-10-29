@@ -583,3 +583,62 @@ async fn removed_entry_starts_fresh_when_registered_again() {
     assert_eq!(embedder.batches.lock().unwrap().len(), 2);
     assert!(store.get("x").await.unwrap().unwrap().examples.is_empty());
 }
+
+#[tokio::test]
+async fn least_recently_used_survives_a_restart_with_a_persistent_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("entries.json");
+    let config = RegistryConfig {
+        max_examples_per_entry: 2,
+        eviction_policy: EvictionPolicy::LeastRecentlyUsed,
+        ..permissive()
+    };
+    let open = |config: RegistryConfig| {
+        let path = path.clone();
+        async move {
+            let store = Arc::new(
+                semantic_registry::JsonStore::<()>::load_or_create(path)
+                    .await
+                    .unwrap(),
+            );
+            let embedder = Arc::new(VecEmbedder);
+            let retriever = Arc::new(semantic_registry::CosineRetriever::new(
+                store.clone(),
+                embedder.clone(),
+            ));
+            let registry =
+                SemanticRegistry::new(store.clone(), embedder, retriever).with_config(config);
+            (registry, store)
+        }
+    };
+
+    // First run: the oldest example is the one searches keep finding
+    {
+        let (registry, store) = open(config.clone()).await;
+        registry
+            .register(entry("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
+            .await
+            .unwrap();
+        let hit = registry.search("0,1,0.1", 1).await.unwrap().remove(0);
+        assert_eq!(hit.matched_example, Some(0));
+        store.flush().await.unwrap();
+    }
+
+    // Second run, fresh registry: without the persisted use, LRU would fall back to the
+    // oldest example ("0,1,0"); with it, the never-used "0,0,1" goes
+    let (registry, store) = open(config).await;
+    let decision = registry
+        .record_feedback("0,1,1", "x", FeedbackOutcome::Success)
+        .await
+        .unwrap();
+    assert_eq!(
+        decision,
+        FeedbackDecision::Added {
+            evicted: vec!["0,0,1".into()]
+        }
+    );
+    assert_eq!(
+        store.get("x").await.unwrap().unwrap().examples,
+        ["0,1,0", "0,1,1"]
+    );
+}

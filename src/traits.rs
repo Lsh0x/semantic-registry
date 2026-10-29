@@ -1,5 +1,7 @@
 //! Extension points: plug in your own embedding model, storage or search engine.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 
 use crate::error::Result;
@@ -52,6 +54,21 @@ pub trait EntryStore<P: Payload>: Send + Sync {
     async fn append_example(&self, id: &str, example: String, embedding: Vec<f32>) -> Result<()>;
     /// Removes `examples[index]` and its embedding. Unknown ids and indexes are ignored.
     async fn remove_example(&self, id: &str, index: usize) -> Result<()>;
+
+    /// Records that `example` of entry `id` was last used at `at`: it won a search, or was just
+    /// added. `at` is in microseconds since the Unix epoch and increases within a process.
+    ///
+    /// Feeds [`EvictionPolicy::LeastRecentlyUsed`](crate::types::EvictionPolicy) across
+    /// restarts. The default persists nothing: the registry then remembers uses until it
+    /// restarts. A store may defer the write, for example to its next change.
+    async fn record_example_use(&self, _id: &str, _example: &str, _at: u64) -> Result<()> {
+        Ok(())
+    }
+
+    /// The last recorded use of each example of entry `id`, by example text. Defaults to none.
+    async fn example_uses(&self, _id: &str) -> Result<HashMap<String, u64>> {
+        Ok(HashMap::new())
+    }
 }
 
 /// Turns text into a vector. Every entry and query must go through the same model.
