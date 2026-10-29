@@ -1,14 +1,14 @@
 [package]
-name = "tools-rag"
-version = "0.2.0"
+name = "semantic-registry"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
-description = "Semantic tool retrieval for LLM agents: embed tool definitions, search them by intent with MaxSim scoring, and learn from usage feedback."
+description = "A registry of named entries searched by meaning: tools, skills, prompts or schemas for LLM agents. MaxSim over learned examples, with a guarded feedback loop."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/Lsh0x/tools-rag"
-documentation = "https://docs.rs/tools-rag"
+repository = "https://github.com/Lsh0x/semantic-registry"
+documentation = "https://docs.rs/semantic-registry"
 readme = "README.md"
-keywords = ["rag", "llm", "tools", "embeddings", "mcp"]
+keywords = ["semantic-search", "llm", "agents", "embeddings", "mcp"]
 categories = ["text-processing", "science"]
 exclude = [".github/", "assets/", "**/*.un~"]
 
@@ -35,6 +35,8 @@ tiercache = { version = "0.1", optional = true }
 [features]
 default = []
 cache = ["dep:tiercache"]
+# Ingestion de `tools/list` et définition de `search_tools` (aucune dépendance)
+mcp = []
 candle = [
     "tokio/rt",
     "dep:candle-core",

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tiercache::{Cache, Lru};
 
-use crate::errors::Result;
+use crate::error::Result;
 use crate::traits::Embedder;
 
 /// Embedder qui mémorise les vecteurs dans un [`tiercache::Cache`].

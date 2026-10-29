@@ -2,59 +2,48 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{permissive, registry, registry_with_strategy, tool};
-use serde_json::json;
-use tools_rag::defaults::cosine_retriever::CosineRetriever;
-use tools_rag::defaults::memory_store::InMemoryToolStore;
-use tools_rag::embedder::DummyEmbedder;
-use tools_rag::formatter::DefaultToolFormatter;
-use tools_rag::registry::ToolRegistry;
-use tools_rag::traits::ToolStore;
-use tools_rag::types::{
-    EvictionPolicy, FeedbackDecision, FeedbackOutcome, RegistryConfig, ScoringStrategy,
-    ToolDefinition,
-};
+use common::{entry, permissive, registry, registry_with_strategy, VecEmbedder};
+use semantic_registry::prelude::*;
+use semantic_registry::InMemoryStore;
 
-async fn examples_of(store: &InMemoryToolStore, name: &str) -> Vec<String> {
-    store.get(name).await.unwrap().unwrap().examples
+async fn examples_of(store: &InMemoryStore<()>, id: &str) -> Vec<String> {
+    store.get(id).await.unwrap().unwrap().examples
 }
 
 #[tokio::test]
-async fn test_tool_registration_and_search() {
-    let store = Arc::new(InMemoryToolStore::new());
-    let embedder = Arc::new(DummyEmbedder::new(384));
-    let retriever = Arc::new(CosineRetriever::new(store.clone(), embedder.clone()));
-    let formatter = Box::new(DefaultToolFormatter);
+async fn in_memory_registry_returns_payloads() {
+    let registry = SemanticRegistry::in_memory(Arc::new(VecEmbedder));
+    registry
+        .register(Entry::new(
+            "weather",
+            "1,0,0",
+            serde_json::json!({ "endpoint": "/w" }),
+        ))
+        .await
+        .unwrap();
+    registry
+        .register(Entry::new(
+            "fx",
+            "0,1,0",
+            serde_json::json!({ "endpoint": "/fx" }),
+        ))
+        .await
+        .unwrap();
 
-    let registry = ToolRegistry::new(store, embedder, retriever, formatter);
-
-    let sample_tool = ToolDefinition::new(
-        "get_weather",
-        "Fetch weather info for a city",
-        json!({
-            "type": "object",
-            "properties": {
-                "location": { "type": "string", "description": "City name" }
-            }
-        }),
-    );
-
-    registry.register(sample_tool).await.unwrap();
-
-    let results = registry.search("weather in Paris", 1).await.unwrap();
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].tool.name, "get_weather");
+    let hits = registry.search("1,0.2,0", 1).await.unwrap();
+    assert_eq!(hits[0].entry.id, "weather");
+    assert_eq!(hits[0].entry.payload["endpoint"], "/w");
 }
 
 #[tokio::test]
 async fn search_ranks_by_similarity_and_respects_limit() {
     let (registry, _) = registry(permissive());
-    registry.register(tool("x", "1,0,0")).await.unwrap();
-    registry.register(tool("y", "0,1,0")).await.unwrap();
-    registry.register(tool("xy", "1,1,0")).await.unwrap();
+    registry.register(entry("x", "1,0,0")).await.unwrap();
+    registry.register(entry("y", "0,1,0")).await.unwrap();
+    registry.register(entry("xy", "1,1,0")).await.unwrap();
 
     let results = registry.search("1,0.1,0", 2).await.unwrap();
-    let names: Vec<_> = results.iter().map(|r| r.tool.name.as_str()).collect();
+    let names: Vec<_> = results.iter().map(|r| r.entry.id.as_str()).collect();
     assert_eq!(names, ["x", "xy"]);
     assert!(results[0].score > results[1].score);
 }
@@ -65,19 +54,19 @@ async fn search_drops_results_below_min_search_score() {
         min_search_score: 0.5,
         ..permissive()
     });
-    registry.register(tool("x", "1,0,0")).await.unwrap();
-    registry.register(tool("y", "0,1,0")).await.unwrap();
+    registry.register(entry("x", "1,0,0")).await.unwrap();
+    registry.register(entry("y", "0,1,0")).await.unwrap();
 
     let results = registry.search("1,0,0", 10).await.unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].tool.name, "x");
+    assert_eq!(results[0].entry.id, "x");
 }
 
 #[tokio::test]
-async fn reregistering_a_tool_replaces_it() {
+async fn reregistering_an_entry_replaces_it() {
     let (registry, store) = registry(permissive());
-    registry.register(tool("x", "1,0,0")).await.unwrap();
-    registry.register(tool("x", "0,1,0")).await.unwrap();
+    registry.register(entry("x", "1,0,0")).await.unwrap();
+    registry.register(entry("x", "0,1,0")).await.unwrap();
 
     let all = store.list_all().await.unwrap();
     assert_eq!(all.len(), 1);
@@ -87,22 +76,22 @@ async fn reregistering_a_tool_replaces_it() {
 #[tokio::test]
 async fn success_feedback_adds_example_and_improves_ranking() {
     let (registry, store) = registry(permissive());
-    registry.register(tool("logs", "1,0,0")).await.unwrap();
+    registry.register(entry("logs", "1,0,0")).await.unwrap();
     registry
-        .register(tool("metrics", "0.6,0.8,0"))
+        .register(entry("metrics", "0.6,0.8,0"))
         .await
         .unwrap();
 
     // Avant feedback, "metrics" gagne sur cette requête
     let before = registry.search("0.5,1,0.3", 1).await.unwrap();
-    assert_eq!(before[0].tool.name, "metrics");
+    assert_eq!(before[0].entry.id, "metrics");
 
     let decision = registry
         .record_feedback(
             "0.5,1,0.3",
             "metrics",
             FeedbackOutcome::CorrectedTo {
-                correct_tool_name: "logs".into(),
+                correct_id: "logs".into(),
             },
         )
         .await
@@ -112,7 +101,7 @@ async fn success_feedback_adds_example_and_improves_ranking() {
     assert!(examples_of(&store, "metrics").await.is_empty());
 
     let after = registry.search("0.5,1,0.3", 1).await.unwrap();
-    assert_eq!(after[0].tool.name, "logs");
+    assert_eq!(after[0].entry.id, "logs");
     assert!((after[0].score - 1.0).abs() < 1e-6);
 }
 
@@ -122,7 +111,7 @@ async fn duplicate_query_is_rejected() {
         dedup_similarity_threshold: 0.9,
         ..permissive()
     });
-    registry.register(tool("x", "1,0,0")).await.unwrap();
+    registry.register(entry("x", "1,0,0")).await.unwrap();
 
     let decision = registry
         .record_feedback("1,0.1,0", "x", FeedbackOutcome::Success)
@@ -138,7 +127,7 @@ async fn duplicate_check_covers_learned_examples() {
         dedup_similarity_threshold: 0.9,
         ..permissive()
     });
-    registry.register(tool("x", "1,0,0")).await.unwrap();
+    registry.register(entry("x", "1,0,0")).await.unwrap();
 
     let first = registry
         .record_feedback("0,1,0", "x", FeedbackOutcome::Success)
@@ -158,7 +147,7 @@ async fn success_below_min_feedback_score_is_rejected() {
         min_feedback_score: 0.4,
         ..permissive()
     });
-    registry.register(tool("x", "1,0,0")).await.unwrap();
+    registry.register(entry("x", "1,0,0")).await.unwrap();
 
     let decision = registry
         .record_feedback("0.2,1,0", "x", FeedbackOutcome::Success)
@@ -174,15 +163,15 @@ async fn correction_bypasses_min_feedback_score() {
         min_feedback_score: 0.4,
         ..permissive()
     });
-    registry.register(tool("x", "1,0,0")).await.unwrap();
-    registry.register(tool("y", "0,0,1")).await.unwrap();
+    registry.register(entry("x", "1,0,0")).await.unwrap();
+    registry.register(entry("y", "0,0,1")).await.unwrap();
 
     let decision = registry
         .record_feedback(
             "0,1,0",
             "y",
             FeedbackOutcome::CorrectedTo {
-                correct_tool_name: "x".into(),
+                correct_id: "x".into(),
             },
         )
         .await
@@ -192,22 +181,22 @@ async fn correction_bypasses_min_feedback_score() {
 }
 
 #[tokio::test]
-async fn unknown_tool_is_reported() {
+async fn unknown_entry_is_reported() {
     let (registry, _) = registry(permissive());
     let decision = registry
         .record_feedback("1,0,0", "missing", FeedbackOutcome::Success)
         .await
         .unwrap();
-    assert_eq!(decision, FeedbackDecision::ToolNotFound);
+    assert_eq!(decision, FeedbackDecision::EntryNotFound);
 }
 
 #[tokio::test]
 async fn zero_max_examples_disables_feedback() {
     let (registry, store) = registry(RegistryConfig {
-        max_examples_per_tool: 0,
+        max_examples_per_entry: 0,
         ..permissive()
     });
-    registry.register(tool("x", "1,0,0")).await.unwrap();
+    registry.register(entry("x", "1,0,0")).await.unwrap();
 
     let decision = registry
         .record_feedback("0,1,0", "x", FeedbackOutcome::Success)
@@ -220,11 +209,11 @@ async fn zero_max_examples_disables_feedback() {
 #[tokio::test]
 async fn fifo_evicts_oldest_example() {
     let (registry, store) = registry(RegistryConfig {
-        max_examples_per_tool: 2,
+        max_examples_per_entry: 2,
         eviction_policy: EvictionPolicy::Fifo,
         ..permissive()
     });
-    registry.register(tool("x", "1,0,0")).await.unwrap();
+    registry.register(entry("x", "1,0,0")).await.unwrap();
 
     for q in ["0,1,0", "0,0,1"] {
         let d = registry
@@ -259,11 +248,11 @@ async fn fifo_evicts_oldest_example() {
 #[tokio::test]
 async fn most_redundant_with_base_evicts_closest_to_description() {
     let (registry, store) = registry(RegistryConfig {
-        max_examples_per_tool: 2,
+        max_examples_per_entry: 2,
         eviction_policy: EvictionPolicy::MostRedundantWithBase,
         ..permissive()
     });
-    let seeded = tool("x", "1,0,0").with_examples(vec!["0.1,0.9,0".into(), "0.9,0.1,0".into()]);
+    let seeded = entry("x", "1,0,0").with_examples(vec!["0.1,0.9,0".into(), "0.9,0.1,0".into()]);
     registry.register(seeded).await.unwrap();
 
     let decision = registry
@@ -283,12 +272,12 @@ async fn most_redundant_with_base_evicts_closest_to_description() {
 #[tokio::test]
 async fn reject_when_full_leaves_store_untouched() {
     let (registry, store) = registry(RegistryConfig {
-        max_examples_per_tool: 1,
+        max_examples_per_entry: 1,
         eviction_policy: EvictionPolicy::RejectWhenFull,
         ..permissive()
     });
     registry
-        .register(tool("x", "1,0,0").with_examples(vec!["0,1,0".into()]))
+        .register(entry("x", "1,0,0").with_examples(vec!["0,1,0".into()]))
         .await
         .unwrap();
 
@@ -301,13 +290,13 @@ async fn reject_when_full_leaves_store_untouched() {
 }
 
 #[tokio::test]
-async fn eviction_shrinks_tools_registered_above_the_cap() {
+async fn eviction_shrinks_entries_registered_above_the_cap() {
     let (registry, store) = registry(RegistryConfig {
-        max_examples_per_tool: 2,
+        max_examples_per_entry: 2,
         ..permissive()
     });
     let seeded =
-        tool("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into(), "0,1,1".into()]);
+        entry("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into(), "0,1,1".into()]);
     registry.register(seeded).await.unwrap();
 
     let decision = registry
@@ -325,22 +314,22 @@ async fn eviction_shrinks_tools_registered_above_the_cap() {
 }
 
 #[tokio::test]
-async fn weighted_max_sim_dampens_example_heavy_tools() {
+async fn weighted_max_sim_dampens_example_heavy_entries() {
     let setup = |strategy| async move {
         let (registry, _) = registry_with_strategy(permissive(), strategy);
         // "canonical" : description proche de la requête (cos ≈ 0.70)
         registry
-            .register(tool("canonical", "0.7,0.714,0"))
+            .register(entry("canonical", "0.7,0.714,0"))
             .await
             .unwrap();
         // "magnet" : description hors-sujet, mais un exemple appris proche (cos = 0.8)
         registry
-            .register(tool("magnet", "0,1,0").with_examples(vec!["0.8,0.6,0".into()]))
+            .register(entry("magnet", "0,1,0").with_examples(vec!["0.8,0.6,0".into()]))
             .await
             .unwrap();
         registry.search("1,0,0", 1).await.unwrap()[0]
-            .tool
-            .name
+            .entry
+            .id
             .clone()
     };
 
@@ -355,18 +344,10 @@ async fn weighted_max_sim_dampens_example_heavy_tools() {
 }
 
 #[tokio::test]
-async fn meta_tool_is_search_tools() {
-    let (registry, _) = registry(permissive());
-    let meta = registry.meta_tool_definition();
-    assert_eq!(meta.name, "search_tools");
-    assert_eq!(meta.parameters["required"], json!(["query"]));
-}
-
-#[tokio::test]
 async fn search_reports_which_example_matched() {
     let (registry, _) = registry(permissive());
     registry
-        .register(tool("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
+        .register(entry("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
         .await
         .unwrap();
 
@@ -383,12 +364,12 @@ async fn search_reports_which_example_matched() {
 #[tokio::test]
 async fn least_recently_used_evicts_example_not_hit_by_searches() {
     let (registry, store) = registry(RegistryConfig {
-        max_examples_per_tool: 2,
+        max_examples_per_entry: 2,
         eviction_policy: EvictionPolicy::LeastRecentlyUsed,
         ..permissive()
     });
     registry
-        .register(tool("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
+        .register(entry("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
         .await
         .unwrap();
 
@@ -422,12 +403,12 @@ async fn least_recently_used_evicts_example_not_hit_by_searches() {
 #[tokio::test]
 async fn least_recently_used_without_history_behaves_like_fifo() {
     let (registry, store) = registry(RegistryConfig {
-        max_examples_per_tool: 2,
+        max_examples_per_entry: 2,
         eviction_policy: EvictionPolicy::LeastRecentlyUsed,
         ..permissive()
     });
     registry
-        .register(tool("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
+        .register(entry("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
         .await
         .unwrap();
 
@@ -436,4 +417,50 @@ async fn least_recently_used_without_history_behaves_like_fifo() {
         .await
         .unwrap();
     assert_eq!(examples_of(&store, "x").await, ["0,0,1", "0,1,1"]);
+}
+
+struct Shift;
+
+impl Formatter<()> for Shift {
+    fn canonical_text(&self, entry: &Entry<()>) -> String {
+        entry.text.clone()
+    }
+
+    // Les exemples sont embarqués avec une composante en plus : "a,b" -> "a,b,1"
+    fn example_text(&self, _entry: &Entry<()>, example: &str) -> String {
+        format!("{example},1")
+    }
+}
+
+#[tokio::test]
+async fn feedback_examples_go_through_the_formatter() {
+    let store = Arc::new(InMemoryStore::new());
+    let embedder = Arc::new(VecEmbedder);
+    let retriever = Arc::new(semantic_registry::CosineRetriever::new(
+        store.clone(),
+        embedder.clone(),
+    ));
+    let registry = SemanticRegistry::new(store.clone(), embedder, retriever)
+        .with_config(permissive())
+        .with_formatter(Shift);
+    registry
+        .register(entry("x", "1,0,0").with_examples(vec!["0,1".into()]))
+        .await
+        .unwrap();
+
+    registry
+        .record_feedback("1,1", "x", FeedbackOutcome::Success)
+        .await
+        .unwrap();
+
+    // Exemple semé et exemple appris embarqués de la même façon ; le texte reste brut
+    assert_eq!(
+        store.get_embeddings("x").await.unwrap().unwrap(),
+        vec![
+            vec![1.0, 0.0, 0.0],
+            vec![0.0, 1.0, 1.0],
+            vec![1.0, 1.0, 1.0]
+        ]
+    );
+    assert_eq!(examples_of(&store, "x").await, ["0,1", "1,1"]);
 }

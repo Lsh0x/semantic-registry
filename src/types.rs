@@ -1,37 +1,26 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-/// Résultat d'une recherche d'outil avec son score de similarité
+/// Une entrée du registre : ce que la bibliothèque indexe, et le `payload` qu'elle rend tel quel
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SearchResult {
-    pub tool: ToolDefinition,
-    pub score: f32,
-    /// Index (dans `tool.examples`) de l'exemple qui a donné le score, `None` si c'est la
-    /// description canonique. Alimente `EvictionPolicy::LeastRecentlyUsed`.
-    #[serde(default)]
-    pub matched_example: Option<usize>,
-}
-
-/// Définition canonique d'un outil
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: Value,
+pub struct Entry<P> {
+    /// Identifiant unique (nom d'outil, clé de skill, nom de table…)
+    pub id: String,
+    /// Texte du chunk canonique
+    pub text: String,
+    /// Formulations d'utilisateurs : fournies à l'enregistrement, puis enrichies par le feedback
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub examples: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
+    /// Données de l'appelant (schéma d'outil, config, `()`…), jamais lues par la bibliothèque
+    pub payload: P,
 }
 
-impl ToolDefinition {
-    pub fn new(name: impl Into<String>, description: impl Into<String>, parameters: Value) -> Self {
+impl<P> Entry<P> {
+    pub fn new(id: impl Into<String>, text: impl Into<String>, payload: P) -> Self {
         Self {
-            name: name.into(),
-            description: description.into(),
-            parameters,
+            id: id.into(),
+            text: text.into(),
             examples: Vec::new(),
-            metadata: None,
+            payload,
         }
     }
 
@@ -41,45 +30,56 @@ impl ToolDefinition {
     }
 }
 
-/// Issue d'une exécution d'outil pour le retour d'expérience
-#[derive(Debug, Clone, PartialEq)]
-pub enum FeedbackOutcome {
-    /// L'outil sélectionné était correct
-    Success,
-    /// L'outil sélectionné était incorrect, spécifie le nom de l'outil qui aurait dû être choisi
-    CorrectedTo { correct_tool_name: String },
+/// Résultat d'une recherche avec son score de similarité
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SearchResult<P> {
+    pub entry: Entry<P>,
+    pub score: f32,
+    /// Index (dans `entry.examples`) de l'exemple qui a donné le score, `None` si c'est le
+    /// chunk canonique. Alimente `EvictionPolicy::LeastRecentlyUsed`.
+    #[serde(default)]
+    pub matched_example: Option<usize>,
 }
 
-/// Politique appliquée quand un outil a atteint `max_examples_per_tool`
+/// Retour d'expérience sur une entrée choisie à partir d'une recherche
+#[derive(Debug, Clone, PartialEq)]
+pub enum FeedbackOutcome {
+    /// L'entrée choisie était la bonne
+    Success,
+    /// L'entrée choisie était mauvaise : `correct_id` est celle qui aurait dû l'être
+    CorrectedTo { correct_id: String },
+}
+
+/// Politique appliquée quand une entrée a atteint `max_examples_per_entry`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EvictionPolicy {
     /// Supprime le plus ancien exemple (ring buffer)
     #[default]
     Fifo,
-    /// Supprime l'exemple le plus proche de la description canonique (le moins informatif)
+    /// Supprime l'exemple le plus proche du chunk canonique (le moins informatif)
     MostRedundantWithBase,
     /// Supprime l'exemple qui a gagné une recherche le moins récemment (jamais = le plus ancien).
-    /// L'historique d'usage vit dans le `ToolRegistry`, en mémoire : il repart de zéro au
+    /// L'historique d'usage vit dans le `SemanticRegistry`, en mémoire : il repart de zéro au
     /// redémarrage, où la politique se comporte comme `Fifo` jusqu'aux premières recherches.
     LeastRecentlyUsed,
     /// Conservateur : refuse le nouvel exemple tant que le quota est atteint
     RejectWhenFull,
 }
 
-/// Combinaison des scores de la description canonique et des exemples d'un outil
+/// Combinaison des scores du chunk canonique et des exemples d'une entrée
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum ScoringStrategy {
     /// MaxSim pur : `max(score_base, max(score_exemples))`
     #[default]
     MaxSim,
     /// MaxSim pondéré : `max(score_base, max(score_exemples) * example_weight)`.
-    /// Un poids < 1.0 limite l'effet « outil aimant » des outils qui accumulent du feedback.
+    /// Un poids < 1.0 limite l'effet « aimant » des entrées qui accumulent du feedback.
     WeightedMaxSim { example_weight: f32 },
 }
 
 impl ScoringStrategy {
-    /// Calcule le score d'un outil. `base` est la similarité avec le chunk canonique,
-    /// `best_example` la meilleure similarité parmi les exemples (si l'outil en a).
+    /// Calcule le score d'une entrée. `base` est la similarité avec le chunk canonique,
+    /// `best_example` la meilleure similarité parmi les exemples (si l'entrée en a).
     pub fn combine(&self, base: f32, best_example: Option<f32>) -> f32 {
         self.combine_with_source(base, best_example).0
     }
@@ -99,16 +99,16 @@ impl ScoringStrategy {
     }
 }
 
-/// Configuration de la politique métier du [`ToolRegistry`](crate::registry::ToolRegistry)
+/// Configuration de la politique métier du [`SemanticRegistry`](crate::registry::SemanticRegistry)
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegistryConfig {
-    /// Plafond d'exemples conservés par outil (par défaut : 10). `0` désactive le feedback.
-    pub max_examples_per_tool: usize,
+    /// Plafond d'exemples conservés par entrée (par défaut : 10). `0` désactive le feedback.
+    pub max_examples_per_entry: usize,
     /// Similarité cosinus à partir de laquelle une requête est jugée redondante (par défaut : 0.85)
     pub dedup_similarity_threshold: f32,
-    /// Score MaxSim minimal entre la requête et l'outil pour accepter un feedback `Success`
+    /// Score MaxSim minimal entre la requête et l'entrée pour accepter un feedback `Success`
     /// (par défaut : 0.30). Ne s'applique pas à `CorrectedTo` : une correction porte justement
-    /// sur un outil que la recherche a mal classé.
+    /// sur une entrée que la recherche a mal classée.
     pub min_feedback_score: f32,
     /// Politique d'éviction quand le plafond est atteint (par défaut : `Fifo`)
     pub eviction_policy: EvictionPolicy,
@@ -119,7 +119,7 @@ pub struct RegistryConfig {
 impl Default for RegistryConfig {
     fn default() -> Self {
         Self {
-            max_examples_per_tool: 10,
+            max_examples_per_entry: 10,
             dedup_similarity_threshold: 0.85,
             min_feedback_score: 0.30,
             eviction_policy: EvictionPolicy::Fifo,
@@ -138,12 +138,12 @@ pub enum FeedbackDecision {
     },
     /// Rejetée : trop proche d'un chunk existant
     Duplicate { similarity: f32 },
-    /// Rejetée : la requête est trop éloignée de l'outil pour être un signal fiable
+    /// Rejetée : la requête est trop éloignée de l'entrée pour être un signal fiable
     BelowMinScore { score: f32 },
-    /// Rejetée : quota atteint avec `RejectWhenFull`, ou feedback désactivé (`max_examples_per_tool == 0`)
+    /// Rejetée : quota atteint avec `RejectWhenFull`, ou feedback désactivé (`max_examples_per_entry == 0`)
     Full,
-    /// L'outil cible n'existe pas dans le store
-    ToolNotFound,
+    /// L'entrée cible n'existe pas dans le store
+    EntryNotFound,
 }
 
 impl FeedbackDecision {
@@ -176,12 +176,11 @@ mod tests {
     }
 
     #[test]
-    fn tool_definition_serde_skips_empty_fields() {
-        let tool = ToolDefinition::new("t", "d", serde_json::json!({}));
-        let json = serde_json::to_value(&tool).unwrap();
+    fn entry_serde_roundtrips_and_skips_empty_examples() {
+        let entry = Entry::new("t", "d", serde_json::json!({ "k": 1 }));
+        let json = serde_json::to_value(&entry).unwrap();
         assert!(json.get("examples").is_none());
-        assert!(json.get("metadata").is_none());
-        let back: ToolDefinition = serde_json::from_value(json).unwrap();
-        assert_eq!(back, tool);
+        let back: Entry<serde_json::Value> = serde_json::from_value(json).unwrap();
+        assert_eq!(back, entry);
     }
 }

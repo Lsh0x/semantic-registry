@@ -1,18 +1,23 @@
-use tools_rag::defaults::file_store::JsonToolStore;
-use tools_rag::defaults::memory_store::InMemoryToolStore;
-use tools_rag::traits::ToolStore;
-use tools_rag::types::ToolDefinition;
+use semantic_registry::prelude::*;
+use semantic_registry::{InMemoryStore, JsonStore};
 
-fn sample(name: &str) -> ToolDefinition {
-    ToolDefinition::new(name, "desc", serde_json::json!({}))
-        .with_examples(vec!["a".into(), "b".into()])
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Payload {
+    endpoint: String,
+}
+
+fn sample(id: &str) -> Entry<Payload> {
+    let payload = Payload {
+        endpoint: "/t".into(),
+    };
+    Entry::new(id, "desc", payload).with_examples(vec!["a".into(), "b".into()])
 }
 
 fn embeddings() -> Vec<Vec<f32>> {
     vec![vec![0.0], vec![1.0], vec![2.0]]
 }
 
-async fn exercise_store(store: &dyn ToolStore) {
+async fn exercise_store(store: &dyn EntryStore<Payload>) {
     store.insert(sample("t"), embeddings()).await.unwrap();
     assert!(store.get("missing").await.unwrap().is_none());
     assert!(store.get_embeddings("missing").await.unwrap().is_none());
@@ -30,8 +35,9 @@ async fn exercise_store(store: &dyn ToolStore) {
         .await
         .unwrap();
 
-    let tool = store.get("t").await.unwrap().unwrap();
-    assert_eq!(tool.examples, ["b", "c"]);
+    let entry = store.get("t").await.unwrap().unwrap();
+    assert_eq!(entry.examples, ["b", "c"]);
+    assert_eq!(entry.payload.endpoint, "/t");
     assert_eq!(
         store.get_embeddings("t").await.unwrap().unwrap(),
         vec![vec![0.0], vec![2.0], vec![3.0]]
@@ -41,20 +47,20 @@ async fn exercise_store(store: &dyn ToolStore) {
 
 #[tokio::test]
 async fn in_memory_store_keeps_examples_and_embeddings_aligned() {
-    exercise_store(&InMemoryToolStore::new()).await;
+    exercise_store(&InMemoryStore::new()).await;
 }
 
 #[tokio::test]
 async fn json_store_persists_across_reloads() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("nested").join("tools.json");
+    let path = dir.path().join("nested").join("entries.json");
 
     {
-        let store = JsonToolStore::load_or_create(&path).await.unwrap();
+        let store = JsonStore::<Payload>::load_or_create(&path).await.unwrap();
         exercise_store(&store).await;
     }
 
-    let reloaded = JsonToolStore::load_or_create(&path).await.unwrap();
+    let reloaded = JsonStore::<Payload>::load_or_create(&path).await.unwrap();
     let all = reloaded.list_all().await.unwrap();
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].0.examples, ["b", "c"]);
@@ -64,18 +70,18 @@ async fn json_store_persists_across_reloads() {
 #[tokio::test]
 async fn json_store_treats_empty_file_as_empty_store() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tools.json");
+    let path = dir.path().join("entries.json");
     std::fs::write(&path, "  \n").unwrap();
 
-    let store = JsonToolStore::load_or_create(&path).await.unwrap();
+    let store = JsonStore::<Payload>::load_or_create(&path).await.unwrap();
     assert!(store.list_all().await.unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn json_store_rejects_corrupted_file() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tools.json");
+    let path = dir.path().join("entries.json");
     std::fs::write(&path, "{not json").unwrap();
 
-    assert!(JsonToolStore::load_or_create(&path).await.is_err());
+    assert!(JsonStore::<Payload>::load_or_create(&path).await.is_err());
 }

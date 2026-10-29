@@ -1,12 +1,9 @@
 use serde_json::json;
 use std::sync::Arc;
 
-use tools_rag::defaults::cosine_retriever::CosineRetriever;
-use tools_rag::defaults::memory_store::InMemoryToolStore;
-use tools_rag::embedder::CandleEmbedder;
-use tools_rag::formatter::DefaultToolFormatter;
-use tools_rag::registry::ToolRegistry;
-use tools_rag::types::ToolDefinition;
+use semantic_registry::embedder::CandleEmbedder;
+use semantic_registry::prelude::*;
+use serde_json::Value;
 
 // Importation de Candle pour la génération de texte locale
 use candle_core::{Device, Tensor};
@@ -17,9 +14,9 @@ use tokenizers::Tokenizer;
 
 /// Charge un modèle Qwen2.5-0.5B local via Candle et génère 3 exemples d'utilisation
 async fn generate_examples_with_candle_llm(
-    tool: &ToolDefinition,
+    tool: &Entry<Value>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    println!("  [LLM Candle] Génération pour '{}'...", tool.name);
+    println!("  [LLM Candle] Génération pour '{}'...", tool.id);
 
     let api = Api::new()?;
     let repo = api.model("Qwen/Qwen2.5-0.5B-Instruct".to_string());
@@ -47,7 +44,7 @@ async fn generate_examples_with_candle_llm(
          Generate exactly 3 short user questions for the tool '{}': {}\n\
          Format: One question per line starting with '- '. No other text.<|im_end|>\n\
          <|im_start|>assistant\n- ",
-        tool.name, tool.description
+        tool.id, tool.text
     );
 
     let tokens = tokenizer
@@ -92,32 +89,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("1. Initialisation de l'Embedder Candle (all-MiniLM-L6-v2)...");
     let embedder = Arc::new(CandleEmbedder::minilm_v2().await?);
 
-    // Registre 1 : SANS exemples (brut)
-    let store_no_ex = Arc::new(InMemoryToolStore::new());
-    let retriever_no_ex = Arc::new(CosineRetriever::new(store_no_ex.clone(), embedder.clone()));
-    let registry_no_ex = ToolRegistry::new(
-        store_no_ex,
-        embedder.clone(),
-        retriever_no_ex,
-        Box::new(DefaultToolFormatter),
-    );
+    // Registre 1 : SANS exemples (description seule)
+    let registry_no_ex: SemanticRegistry<Value> = SemanticRegistry::in_memory(embedder.clone());
 
     // Registre 2 : AVEC exemples synthétiques
-    let store_with_ex = Arc::new(InMemoryToolStore::new());
-    let retriever_with_ex = Arc::new(CosineRetriever::new(
-        store_with_ex.clone(),
-        embedder.clone(),
-    ));
-    let registry_with_ex = ToolRegistry::new(
-        store_with_ex,
-        embedder.clone(),
-        retriever_with_ex,
-        Box::new(DefaultToolFormatter),
-    );
+    let registry_with_ex: SemanticRegistry<Value> = SemanticRegistry::in_memory(embedder.clone());
 
     // Définition de 3 outils distincts
     let raw_tools = vec![
-        ToolDefinition::new(
+        Entry::new(
             "query_database",
             "Executes a read-only SQL query against the analytical PostgreSQL database.",
             json!({
@@ -128,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "required": ["sql"]
             }),
         ),
-        ToolDefinition::new(
+        Entry::new(
             "get_k8s_pod_logs",
             "Fetches stdout and stderr logs for a Kubernetes pod in a given namespace.",
             json!({
@@ -140,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "required": ["namespace", "pod_name"]
             }),
         ),
-        ToolDefinition::new(
+        Entry::new(
             "search_github_issues",
             "Searches repository issues and pull requests on GitHub for bug reports and error logs.",
             json!({
@@ -172,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 eprintln!("     Erreur LLM ({e}), utilisation d'un fallback statique.");
                 enriched_tool =
-                    enriched_tool.with_examples(vec![format!("How do I use {}?", tool.name)]);
+                    enriched_tool.with_examples(vec![format!("How do I use {}?", tool.id)]);
             }
         }
 
@@ -198,13 +178,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(r1) = res_no_ex.first() {
             println!(
                 "  [SANS Exemples] Outil : {:<20} | Score : {:.4}",
-                r1.tool.name, r1.score
+                r1.entry.id, r1.score
             );
         }
         if let Some(r2) = res_with_ex.first() {
             println!(
                 "  [AVEC Exemples] Outil : {:<20} | Score : {:.4} (MaxSim)",
-                r2.tool.name, r2.score
+                r2.entry.id, r2.score
             );
         }
         println!();
