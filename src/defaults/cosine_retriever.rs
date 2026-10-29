@@ -62,7 +62,8 @@ impl CosineRetriever {
         if norm_a == 0.0 || norm_b == 0.0 {
             0.0
         } else {
-            dot / (norm_a * norm_b)
+            // Les arrondis f32 peuvent dépasser 1.0 pour deux vecteurs identiques
+            (dot / (norm_a * norm_b)).clamp(-1.0, 1.0)
         }
     }
 }
