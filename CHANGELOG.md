@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 Maintained by [release-plz](https://release-plz.dev/) from
 [conventional commits](https://www.conventionalcommits.org/).
 
+## [0.2.1](https://github.com/Lsh0x/semantic-registry/compare/semantic-registry-v0.2.0...semantic-registry-v0.2.1) - 2026-10-29
+
+### Added
+
+- persist the LeastRecentlyUsed history in the store ([#24](https://github.com/Lsh0x/semantic-registry/pull/24))
+- sync and sync_scoped keep learned examples ([#22](https://github.com/Lsh0x/semantic-registry/pull/22))
+
+### Fixed
+
+- serialize feedback, register and remove per entry ([#21](https://github.com/Lsh0x/semantic-registry/pull/21))
+
 ## [0.2.0](https://github.com/Lsh0x/semantic-registry/compare/semantic-registry-v0.1.0...semantic-registry-v0.2.0) - 2026-10-29
 
 ### Added

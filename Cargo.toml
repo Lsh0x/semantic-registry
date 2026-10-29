@@ -1,6 +1,6 @@
 [package]
 name = "semantic-registry"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.88"
 description = "A registry of named entries searched by meaning: tools, skills, prompts or schemas for LLM agents. MaxSim over learned examples, with a guarded feedback loop."
