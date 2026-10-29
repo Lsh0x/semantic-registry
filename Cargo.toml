@@ -1,0 +1,60 @@
+[package]
+name = "tools-rag"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Semantic tool retrieval for LLM agents: embed tool definitions, search them by intent with MaxSim scoring, and learn from usage feedback."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Lsh0x/tools-rag"
+documentation = "https://docs.rs/tools-rag"
+readme = "README.md"
+keywords = ["rag", "llm", "tools", "embeddings", "mcp"]
+categories = ["text-processing", "science"]
+exclude = [".github/", "**/*.un~"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "fs"] }
+
+# Dépendances ML optionnelles
+candle-core = { version = "0.8.2", optional = true }
+candle-nn = { version = "0.8.2", optional = true }
+candle-transformers = { version = "0.8.2", optional = true }
+hf-hub = { version = "0.4.1", features = ["tokio"], optional = true }
+tokenizers = { version = "0.20", optional = true }
+
+[features]
+default = ["candle"]
+candle = [
+    "dep:candle-core",
+    "dep:candle-nn",
+    "dep:candle-transformers",
+    "dep:hf-hub",
+    "dep:tokenizers",
+]
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+
+[[example]]
+name = "basic"
+required-features = ["candle"]
+
+[[example]]
+name = "feedback"
+required-features = ["candle"]
+
+[[example]]
+name = "persistent_store"
+required-features = ["candle"]
+
+[[example]]
+name = "llm_example_gen"
+required-features = ["candle"]
