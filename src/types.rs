@@ -6,6 +6,10 @@ use serde_json::Value;
 pub struct SearchResult {
     pub tool: ToolDefinition,
     pub score: f32,
+    /// Index (dans `tool.examples`) de l'exemple qui a donné le score, `None` si c'est la
+    /// description canonique. Alimente `EvictionPolicy::LeastRecentlyUsed`.
+    #[serde(default)]
+    pub matched_example: Option<usize>,
 }
 
 /// Définition canonique d'un outil
@@ -54,6 +58,10 @@ pub enum EvictionPolicy {
     Fifo,
     /// Supprime l'exemple le plus proche de la description canonique (le moins informatif)
     MostRedundantWithBase,
+    /// Supprime l'exemple qui a gagné une recherche le moins récemment (jamais = le plus ancien).
+    /// L'historique d'usage vit dans le `ToolRegistry`, en mémoire : il repart de zéro au
+    /// redémarrage, où la politique se comporte comme `Fifo` jusqu'aux premières recherches.
+    LeastRecentlyUsed,
     /// Conservateur : refuse le nouvel exemple tant que le quota est atteint
     RejectWhenFull,
 }
@@ -73,10 +81,20 @@ impl ScoringStrategy {
     /// Calcule le score d'un outil. `base` est la similarité avec le chunk canonique,
     /// `best_example` la meilleure similarité parmi les exemples (si l'outil en a).
     pub fn combine(&self, base: f32, best_example: Option<f32>) -> f32 {
-        match (self, best_example) {
-            (_, None) => base,
-            (Self::MaxSim, Some(ex)) => base.max(ex),
-            (Self::WeightedMaxSim { example_weight }, Some(ex)) => base.max(ex * example_weight),
+        self.combine_with_source(base, best_example).0
+    }
+
+    /// Comme [`combine`](Self::combine), et indique si c'est l'exemple qui l'emporte
+    pub fn combine_with_source(&self, base: f32, best_example: Option<f32>) -> (f32, bool) {
+        let weighted = match (self, best_example) {
+            (_, None) => return (base, false),
+            (Self::MaxSim, Some(ex)) => ex,
+            (Self::WeightedMaxSim { example_weight }, Some(ex)) => ex * example_weight,
+        };
+        if weighted > base {
+            (weighted, true)
+        } else {
+            (base, false)
         }
     }
 }

@@ -27,15 +27,28 @@ impl CosineRetriever {
     /// Score d'un outil selon la stratégie. Par convention, `embeddings[0]` est le chunk
     /// canonique (nom + description) et `embeddings[1..]` les exemples.
     pub fn score(&self, query_vec: &[f32], embeddings: &[Vec<f32>]) -> f32 {
+        self.score_with_match(query_vec, embeddings).0
+    }
+
+    /// Score et index de l'exemple gagnant (`None` si la description canonique l'emporte)
+    pub fn score_with_match(
+        &self,
+        query_vec: &[f32],
+        embeddings: &[Vec<f32>],
+    ) -> (f32, Option<usize>) {
         let Some((base, examples)) = embeddings.split_first() else {
-            return 0.0;
+            return (0.0, None);
         };
         let base_score = Self::cosine_similarity(query_vec, base).max(0.0);
         let best_example = examples
             .iter()
             .map(|emb| Self::cosine_similarity(query_vec, emb))
-            .reduce(f32::max);
-        self.strategy.combine(base_score, best_example)
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        let (score, example_wins) = self
+            .strategy
+            .combine_with_source(base_score, best_example.map(|(_, s)| s));
+        (score, best_example.filter(|_| example_wins).map(|(i, _)| i))
     }
 
     /// Rendu public pour être utilisé par les garde-fous de dédoublonnage sémantique
@@ -63,8 +76,12 @@ impl ToolRetriever for CosineRetriever {
         let mut scored: Vec<SearchResult> = all_tools
             .into_iter()
             .map(|(tool, embeddings)| {
-                let score = self.score(&query_vec, &embeddings);
-                SearchResult { tool, score }
+                let (score, matched_example) = self.score_with_match(&query_vec, &embeddings);
+                SearchResult {
+                    tool,
+                    score,
+                    matched_example,
+                }
             })
             .collect();
 

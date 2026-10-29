@@ -361,3 +361,79 @@ async fn meta_tool_is_search_tools() {
     assert_eq!(meta.name, "search_tools");
     assert_eq!(meta.parameters["required"], json!(["query"]));
 }
+
+#[tokio::test]
+async fn search_reports_which_example_matched() {
+    let (registry, _) = registry(permissive());
+    registry
+        .register(tool("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        registry.search("0,0.1,1", 1).await.unwrap()[0].matched_example,
+        Some(1)
+    );
+    assert_eq!(
+        registry.search("1,0,0.1", 1).await.unwrap()[0].matched_example,
+        None
+    );
+}
+
+#[tokio::test]
+async fn least_recently_used_evicts_example_not_hit_by_searches() {
+    let (registry, store) = registry(RegistryConfig {
+        max_examples_per_tool: 2,
+        eviction_policy: EvictionPolicy::LeastRecentlyUsed,
+        ..permissive()
+    });
+    registry
+        .register(tool("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
+        .await
+        .unwrap();
+
+    // Le plus ancien exemple ("0,1,0") est le seul à servir : c'est "0,0,1" qui part
+    registry.search("0,1,0.1", 1).await.unwrap();
+    let decision = registry
+        .record_feedback("0,1,1", "x", FeedbackOutcome::Success)
+        .await
+        .unwrap();
+    assert_eq!(
+        decision,
+        FeedbackDecision::Added {
+            evicted: vec!["0,0,1".into()]
+        }
+    );
+
+    // L'exemple tout juste ajouté compte comme utilisé : "0,1,0", touché avant, part ensuite
+    let decision = registry
+        .record_feedback("-1,1,0", "x", FeedbackOutcome::Success)
+        .await
+        .unwrap();
+    assert_eq!(
+        decision,
+        FeedbackDecision::Added {
+            evicted: vec!["0,1,0".into()]
+        }
+    );
+    assert_eq!(examples_of(&store, "x").await, ["0,1,1", "-1,1,0"]);
+}
+
+#[tokio::test]
+async fn least_recently_used_without_history_behaves_like_fifo() {
+    let (registry, store) = registry(RegistryConfig {
+        max_examples_per_tool: 2,
+        eviction_policy: EvictionPolicy::LeastRecentlyUsed,
+        ..permissive()
+    });
+    registry
+        .register(tool("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
+        .await
+        .unwrap();
+
+    registry
+        .record_feedback("0,1,1", "x", FeedbackOutcome::Success)
+        .await
+        .unwrap();
+    assert_eq!(examples_of(&store, "x").await, ["0,0,1", "0,1,1"]);
+}

@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::defaults::cosine_retriever::CosineRetriever;
 use crate::errors::Result;
@@ -14,6 +16,7 @@ pub struct ToolRegistry {
     retriever: Arc<dyn ToolRetriever>,
     formatter: Box<dyn ToolFormatter>,
     config: RegistryConfig,
+    usage: UsageTracker,
 }
 
 impl ToolRegistry {
@@ -29,6 +32,7 @@ impl ToolRegistry {
             retriever,
             formatter,
             config: RegistryConfig::default(),
+            usage: UsageTracker::default(),
         }
     }
 
@@ -57,6 +61,11 @@ impl ToolRegistry {
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let mut results = self.retriever.retrieve(query, limit).await?;
         results.retain(|r| r.score >= self.config.min_search_score);
+        for r in &results {
+            if let Some(example) = r.matched_example.and_then(|i| r.tool.examples.get(i)) {
+                self.usage.touch(&r.tool.name, example);
+            }
+        }
         Ok(results)
     }
 
@@ -125,9 +134,14 @@ impl ToolRegistry {
                 EvictionPolicy::MostRedundantWithBase => {
                     most_redundant_with_base(&embeddings).min(examples.len() - 1)
                 }
+                EvictionPolicy::LeastRecentlyUsed => {
+                    self.usage.least_recently_used(target_tool_name, &examples)
+                }
             };
             self.store.remove_example(target_tool_name, index).await?;
-            evicted.push(examples.remove(index));
+            let example = examples.remove(index);
+            self.usage.forget(target_tool_name, &example);
+            evicted.push(example);
             if index + 1 < embeddings.len() {
                 embeddings.remove(index + 1);
             }
@@ -137,6 +151,7 @@ impl ToolRegistry {
         self.store
             .append_example(target_tool_name, user_query.to_string(), query_embedding)
             .await?;
+        self.usage.touch(target_tool_name, user_query);
 
         Ok(FeedbackDecision::Added { evicted })
     }
@@ -157,4 +172,43 @@ fn most_redundant_with_base(embeddings: &[Vec<f32>]) -> usize {
         .map(|(i, emb)| (i, CosineRetriever::cosine_similarity(base, emb)))
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map_or(0, |(i, _)| i)
+}
+
+/// Dernier usage de chaque exemple (horloge logique), par outil
+#[derive(Default)]
+struct UsageTracker {
+    clock: AtomicU64,
+    last_used: Mutex<HashMap<String, HashMap<String, u64>>>,
+}
+
+impl UsageTracker {
+    fn touch(&self, tool: &str, example: &str) {
+        let tick = self.clock.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Ok(mut map) = self.last_used.lock() {
+            map.entry(tool.to_string())
+                .or_default()
+                .insert(example.to_string(), tick);
+        }
+    }
+
+    fn forget(&self, tool: &str, example: &str) {
+        if let Ok(mut map) = self.last_used.lock() {
+            if let Some(examples) = map.get_mut(tool) {
+                examples.remove(example);
+            }
+        }
+    }
+
+    /// Exemple jamais utilisé ou utilisé le moins récemment ; à égalité, le plus ancien
+    fn least_recently_used(&self, tool: &str, examples: &[String]) -> usize {
+        let Ok(map) = self.last_used.lock() else {
+            return 0;
+        };
+        let used = map.get(tool);
+        examples
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, ex)| used.and_then(|u| u.get(ex.as_str())).copied().unwrap_or(0))
+            .map_or(0, |(i, _)| i)
+    }
 }
