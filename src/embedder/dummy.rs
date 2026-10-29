@@ -1,4 +1,4 @@
-use crate::errors::Result;
+use crate::error::Result;
 use crate::traits::Embedder;
 use async_trait::async_trait;
 

@@ -6,7 +6,7 @@ use hf_hub::api::tokio::ApiBuilder;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 
-use crate::errors::{Result, ToolRagError};
+use crate::error::{Error, Result};
 use crate::traits::Embedder;
 
 #[derive(Clone)]
@@ -28,31 +28,31 @@ impl CandleEmbedder {
 
         let api = ApiBuilder::new()
             .build()
-            .map_err(|e| ToolRagError::TransportError(e.to_string()))?;
+            .map_err(|e| Error::TransportError(e.to_string()))?;
 
         let repo = api.model("sentence-transformers/all-MiniLM-L6-v2".to_string());
 
         let config_filename = repo
             .get("config.json")
             .await
-            .map_err(|e| ToolRagError::TransportError(e.to_string()))?;
+            .map_err(|e| Error::TransportError(e.to_string()))?;
         let tokenizer_filename = repo
             .get("tokenizer.json")
             .await
-            .map_err(|e| ToolRagError::TransportError(e.to_string()))?;
+            .map_err(|e| Error::TransportError(e.to_string()))?;
         let weights_filename = repo
             .get("model.safetensors")
             .await
-            .map_err(|e| ToolRagError::TransportError(e.to_string()))?;
+            .map_err(|e| Error::TransportError(e.to_string()))?;
 
         let config_str = tokio::fs::read_to_string(config_filename)
             .await
-            .map_err(|e| ToolRagError::ParseError(e.to_string()))?;
-        let config: Config = serde_json::from_str(&config_str)
-            .map_err(|e| ToolRagError::ParseError(e.to_string()))?;
+            .map_err(|e| Error::ParseError(e.to_string()))?;
+        let config: Config =
+            serde_json::from_str(&config_str).map_err(|e| Error::ParseError(e.to_string()))?;
 
         let mut tokenizer = Tokenizer::from_file(tokenizer_filename)
-            .map_err(|e| ToolRagError::ParseError(e.to_string()))?;
+            .map_err(|e| Error::ParseError(e.to_string()))?;
         // Le tokenizer.json de MiniLM complète à 128 tokens : sans masque dans le mean
         // pooling, les [PAD] domineraient le vecteur et rapprocheraient toutes les phrases.
         tokenizer.with_padding(None);
@@ -61,11 +61,11 @@ impl CandleEmbedder {
 
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[weights_filename], DTYPE, &device)
-                .map_err(|e| ToolRagError::EmbeddingFailed(e.to_string()))?
+                .map_err(|e| Error::EmbeddingFailed(e.to_string()))?
         };
 
-        let model = BertModel::load(vb, &config)
-            .map_err(|e| ToolRagError::EmbeddingFailed(e.to_string()))?;
+        let model =
+            BertModel::load(vb, &config).map_err(|e| Error::EmbeddingFailed(e.to_string()))?;
 
         Ok(Self {
             model: Arc::new(model),
@@ -79,7 +79,7 @@ impl CandleEmbedder {
         let tokens = self
             .tokenizer
             .encode(text, true)
-            .map_err(|e| ToolRagError::EmbeddingFailed(e.to_string()))?;
+            .map_err(|e| Error::EmbeddingFailed(e.to_string()))?;
 
         let token_ids = tokens.get_ids();
         let token_ids_tensor = Tensor::new(token_ids, &self.device)?.unsqueeze(0)?;
@@ -113,6 +113,6 @@ impl Embedder for CandleEmbedder {
 
         tokio::task::spawn_blocking(move || embedder.infer(&text))
             .await
-            .map_err(|e| ToolRagError::Internal(e.to_string()))?
+            .map_err(|e| Error::Internal(e.to_string()))?
     }
 }

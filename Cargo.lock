@@ -1970,6 +1970,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "semantic-registry"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "hf-hub",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tiercache",
+ "tokenizers 0.23.2",
+ "tokio",
+]
+
+[[package]]
 name = "seq-macro"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2415,24 +2433,6 @@ dependencies = [
  "futures-sink",
  "libc",
  "pin-project-lite",
- "tokio",
-]
-
-[[package]]
-name = "tools-rag"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "hf-hub",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tiercache",
- "tokenizers 0.23.2",
  "tokio",
 ]
 

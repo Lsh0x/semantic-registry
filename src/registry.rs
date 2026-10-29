@@ -2,38 +2,52 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::defaults::cosine_retriever::CosineRetriever;
-use crate::errors::Result;
-use crate::meta::MetaTool;
-use crate::traits::{Embedder, ToolFormatter, ToolRetriever, ToolStore};
+use crate::error::Result;
+use crate::formatter::DefaultFormatter;
+use crate::retriever::{cosine_similarity, CosineRetriever};
+use crate::store::InMemoryStore;
+use crate::traits::{Embedder, EntryStore, Formatter, Payload, Retriever};
 use crate::types::{
-    EvictionPolicy, FeedbackDecision, FeedbackOutcome, RegistryConfig, SearchResult, ToolDefinition,
+    Entry, EvictionPolicy, FeedbackDecision, FeedbackOutcome, RegistryConfig, SearchResult,
 };
 
-pub struct ToolRegistry {
-    store: Arc<dyn ToolStore>,
+/// Registre d'entrées recherchées par similarité sémantique, enrichi par le feedback
+pub struct SemanticRegistry<P> {
+    store: Arc<dyn EntryStore<P>>,
     embedder: Arc<dyn Embedder>,
-    retriever: Arc<dyn ToolRetriever>,
-    formatter: Box<dyn ToolFormatter>,
+    retriever: Arc<dyn Retriever<P>>,
+    formatter: Box<dyn Formatter<P>>,
     config: RegistryConfig,
     usage: UsageTracker,
 }
 
-impl ToolRegistry {
+impl<P: Payload> SemanticRegistry<P> {
     pub fn new(
-        store: Arc<dyn ToolStore>,
+        store: Arc<dyn EntryStore<P>>,
         embedder: Arc<dyn Embedder>,
-        retriever: Arc<dyn ToolRetriever>,
-        formatter: Box<dyn ToolFormatter>,
+        retriever: Arc<dyn Retriever<P>>,
     ) -> Self {
         Self {
             store,
             embedder,
             retriever,
-            formatter,
+            formatter: Box::new(DefaultFormatter),
             config: RegistryConfig::default(),
             usage: UsageTracker::default(),
         }
+    }
+
+    /// Registre en mémoire avec recherche cosinus : le point de départ le plus court
+    pub fn in_memory(embedder: Arc<dyn Embedder>) -> Self {
+        let store: Arc<dyn EntryStore<P>> = Arc::new(InMemoryStore::new());
+        let retriever = Arc::new(CosineRetriever::new(store.clone(), embedder.clone()));
+        Self::new(store, embedder, retriever)
+    }
+
+    /// Remplace le texte embarqué (par défaut : `text`, puis chaque exemple)
+    pub fn with_formatter(mut self, formatter: impl Formatter<P> + 'static) -> Self {
+        self.formatter = Box::new(formatter);
+        self
     }
 
     pub fn with_config(mut self, config: RegistryConfig) -> Self {
@@ -45,8 +59,8 @@ impl ToolRegistry {
         &self.config
     }
 
-    pub async fn register(&self, tool: ToolDefinition) -> Result<()> {
-        let text_chunks = self.formatter.format(&tool);
+    pub async fn register(&self, entry: Entry<P>) -> Result<()> {
+        let text_chunks = self.formatter.format(&entry);
         let mut embeddings = Vec::with_capacity(text_chunks.len());
 
         for chunk in text_chunks {
@@ -54,59 +68,60 @@ impl ToolRegistry {
             embeddings.push(emb);
         }
 
-        self.store.insert(tool, embeddings).await
+        self.store.insert(entry, embeddings).await
     }
 
-    /// Renvoie au plus `limit` outils, en écartant ceux sous `min_search_score`
-    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+    /// Renvoie au plus `limit` entrées, en écartant celles sous `min_search_score`
+    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult<P>>> {
         let mut results = self.retriever.retrieve(query, limit).await?;
         results.retain(|r| r.score >= self.config.min_search_score);
         for r in &results {
-            if let Some(example) = r.matched_example.and_then(|i| r.tool.examples.get(i)) {
-                self.usage.touch(&r.tool.name, example);
+            if let Some(example) = r.matched_example.and_then(|i| r.entry.examples.get(i)) {
+                self.usage.touch(&r.entry.id, example);
             }
         }
         Ok(results)
     }
 
-    /// Absorbe une requête utilisateur comme exemple de l'outil validé.
+    /// Absorbe une requête utilisateur comme exemple de l'entrée validée.
     ///
     /// La lecture, l'éviction et l'ajout ne sont pas atomiques : des feedbacks concurrents
-    /// sur le même outil peuvent dépasser brièvement `max_examples_per_tool`.
+    /// sur la même entrée peuvent dépasser brièvement `max_examples_per_entry`.
     pub async fn record_feedback(
         &self,
         user_query: &str,
-        selected_tool_name: &str,
+        selected_id: &str,
         outcome: FeedbackOutcome,
     ) -> Result<FeedbackDecision> {
         let config = &self.config;
-        let (target_tool_name, is_correction) = match outcome {
-            FeedbackOutcome::Success => (selected_tool_name, false),
-            FeedbackOutcome::CorrectedTo {
-                ref correct_tool_name,
-            } => (correct_tool_name.as_str(), true),
+        let (target_id, is_correction) = match outcome {
+            FeedbackOutcome::Success => (selected_id, false),
+            FeedbackOutcome::CorrectedTo { ref correct_id } => (correct_id.as_str(), true),
         };
 
-        if config.max_examples_per_tool == 0 {
+        if config.max_examples_per_entry == 0 {
             return Ok(FeedbackDecision::Full);
         }
 
-        let tool = match self.store.get(target_tool_name).await? {
-            Some(t) => t,
-            None => return Ok(FeedbackDecision::ToolNotFound),
-        };
-
-        let existing_embeddings = match self.store.get_embeddings(target_tool_name).await? {
+        let entry = match self.store.get(target_id).await? {
             Some(e) => e,
-            None => return Ok(FeedbackDecision::ToolNotFound),
+            None => return Ok(FeedbackDecision::EntryNotFound),
         };
 
-        let query_embedding = self.embedder.embed(user_query).await?;
+        let existing_embeddings = match self.store.get_embeddings(target_id).await? {
+            Some(e) => e,
+            None => return Ok(FeedbackDecision::EntryNotFound),
+        };
+
+        let query_embedding = self
+            .embedder
+            .embed(&self.formatter.example_text(&entry, user_query))
+            .await?;
 
         // 1. Dédoublonnage sémantique (le meilleur score sert aussi de score de confiance)
         let best_similarity = existing_embeddings
             .iter()
-            .map(|emb| CosineRetriever::cosine_similarity(&query_embedding, emb))
+            .map(|emb| cosine_similarity(&query_embedding, emb))
             .fold(0.0f32, f32::max);
 
         if best_similarity >= config.dedup_similarity_threshold {
@@ -123,11 +138,11 @@ impl ToolRegistry {
         }
 
         // 3. Éviction jusqu'à libérer une place
-        let mut examples = tool.examples;
+        let mut examples = entry.examples;
         let mut embeddings = existing_embeddings;
         let mut evicted = Vec::new();
 
-        while examples.len() >= config.max_examples_per_tool {
+        while examples.len() >= config.max_examples_per_entry {
             let index = match config.eviction_policy {
                 EvictionPolicy::RejectWhenFull => return Ok(FeedbackDecision::Full),
                 EvictionPolicy::Fifo => 0,
@@ -135,12 +150,12 @@ impl ToolRegistry {
                     most_redundant_with_base(&embeddings).min(examples.len() - 1)
                 }
                 EvictionPolicy::LeastRecentlyUsed => {
-                    self.usage.least_recently_used(target_tool_name, &examples)
+                    self.usage.least_recently_used(target_id, &examples)
                 }
             };
-            self.store.remove_example(target_tool_name, index).await?;
+            self.store.remove_example(target_id, index).await?;
             let example = examples.remove(index);
-            self.usage.forget(target_tool_name, &example);
+            self.usage.forget(target_id, &example);
             evicted.push(example);
             if index + 1 < embeddings.len() {
                 embeddings.remove(index + 1);
@@ -149,15 +164,11 @@ impl ToolRegistry {
 
         // 4. Persistance
         self.store
-            .append_example(target_tool_name, user_query.to_string(), query_embedding)
+            .append_example(target_id, user_query.to_string(), query_embedding)
             .await?;
-        self.usage.touch(target_tool_name, user_query);
+        self.usage.touch(target_id, user_query);
 
         Ok(FeedbackDecision::Added { evicted })
-    }
-
-    pub fn meta_tool_definition(&self) -> ToolDefinition {
-        MetaTool::spec()
     }
 }
 
@@ -169,12 +180,12 @@ fn most_redundant_with_base(embeddings: &[Vec<f32>]) -> usize {
     examples
         .iter()
         .enumerate()
-        .map(|(i, emb)| (i, CosineRetriever::cosine_similarity(base, emb)))
+        .map(|(i, emb)| (i, cosine_similarity(base, emb)))
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map_or(0, |(i, _)| i)
 }
 
-/// Dernier usage de chaque exemple (horloge logique), par outil
+/// Dernier usage de chaque exemple (horloge logique), par entrée
 #[derive(Default)]
 struct UsageTracker {
     clock: AtomicU64,
@@ -182,29 +193,29 @@ struct UsageTracker {
 }
 
 impl UsageTracker {
-    fn touch(&self, tool: &str, example: &str) {
+    fn touch(&self, entry: &str, example: &str) {
         let tick = self.clock.fetch_add(1, Ordering::Relaxed) + 1;
         if let Ok(mut map) = self.last_used.lock() {
-            map.entry(tool.to_string())
+            map.entry(entry.to_string())
                 .or_default()
                 .insert(example.to_string(), tick);
         }
     }
 
-    fn forget(&self, tool: &str, example: &str) {
+    fn forget(&self, entry: &str, example: &str) {
         if let Ok(mut map) = self.last_used.lock() {
-            if let Some(examples) = map.get_mut(tool) {
+            if let Some(examples) = map.get_mut(entry) {
                 examples.remove(example);
             }
         }
     }
 
     /// Exemple jamais utilisé ou utilisé le moins récemment ; à égalité, le plus ancien
-    fn least_recently_used(&self, tool: &str, examples: &[String]) -> usize {
+    fn least_recently_used(&self, entry: &str, examples: &[String]) -> usize {
         let Ok(map) = self.last_used.lock() else {
             return 0;
         };
-        let used = map.get(tool);
+        let used = map.get(entry);
         examples
             .iter()
             .enumerate()

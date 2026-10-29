@@ -1,84 +1,57 @@
-use serde_json::json;
+//! The feedback loop, with an embedding cache so feedback reuses the search's vectors.
+//!
+//! cargo run --features candle,cache --example feedback
+
 use std::sync::Arc;
 
-use tools_rag::defaults::cosine_retriever::CosineRetriever;
-use tools_rag::defaults::memory_store::InMemoryToolStore;
-use tools_rag::embedder::{CachedEmbedder, CandleEmbedder};
-use tools_rag::formatter::DefaultToolFormatter;
-use tools_rag::registry::ToolRegistry;
-use tools_rag::types::{FeedbackOutcome, RegistryConfig, ToolDefinition};
+use semantic_registry::embedder::{CachedEmbedder, CandleEmbedder};
+use semantic_registry::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("1. Initialisation de l'Embedder Candle...");
-    // Le cache évite de ré-embedder la requête entre search() et record_feedback()
     let embedder = Arc::new(CachedEmbedder::new(
         Arc::new(CandleEmbedder::minilm_v2().await?),
         "all-MiniLM-L6-v2",
         1024,
     ));
-    let store = Arc::new(InMemoryToolStore::new());
-    let retriever = Arc::new(CosineRetriever::new(store.clone(), embedder.clone()));
-    // Configuration personnalisée des garde-fous
-    let config = RegistryConfig {
-        max_examples_per_tool: 5,
-        ..RegistryConfig::default()
-    };
-    let registry = ToolRegistry::new(store, embedder, retriever, Box::new(DefaultToolFormatter))
-        .with_config(config);
+    let registry: SemanticRegistry<()> =
+        SemanticRegistry::in_memory(embedder).with_config(RegistryConfig {
+            max_examples_per_entry: 5,
+            ..RegistryConfig::default()
+        });
 
-    // Outil brut sans aucun exemple
-    let tool_name = "get_k8s_pod_logs";
-    let tool = ToolDefinition::new(
-        tool_name,
-        "Fetches stdout and stderr logs for a Kubernetes pod in a given namespace.",
-        json!({
-            "type": "object",
-            "properties": {
-                "namespace": { "type": "string" },
-                "pod_name": { "type": "string" }
-            }
-        }),
-    );
-
-    registry.register(tool).await?;
+    // No example yet: only the description is indexed
+    let id = "get_k8s_pod_logs";
+    registry
+        .register(Entry::new(
+            id,
+            "Fetches stdout and stderr logs for a Kubernetes pod in a given namespace.",
+            (),
+        ))
+        .await?;
 
     let query = "My payment pod is crashing, I need stdout logs";
-    println!("\n2. Première recherche pour : \"{}\"", query);
+    let before = registry.search(query, 1).await?;
+    println!("1. search {query:?}");
+    println!("   -> {} ({:.4})", before[0].entry.id, before[0].score);
 
-    let res_before = registry.search(query, 1).await?;
-    if let Some(res) = res_before.first() {
-        println!(
-            "   -> Outil trouvé : {} (Score initial: {:.4})",
-            res.tool.name, res.score
-        );
-    }
-
-    println!("\n3. Enregistrement du feedback (Succès d'exécution)...");
-    let added = registry
-        .record_feedback(query, tool_name, FeedbackOutcome::Success)
+    let decision = registry
+        .record_feedback(query, id, FeedbackOutcome::Success)
         .await?;
-    let similar_query = "Payment container crashing, get stdout output";
+    println!("2. feedback Success -> {decision:?}");
 
-    println!("   -> Décision : {:?}", added);
-    println!("\n4. Deuxième recherche avec une tournure similaire...");
-    println!("     -> query: {}", similar_query);
-    let res_after = registry.search(similar_query, 1).await?;
-    if let Some(res) = res_after.first() {
-        println!(
-            "   -> Outil trouvé : {} (Nouveau Score MaxSim: {:.4})",
-            res.tool.name, res.score
-        );
-    }
-
-    println!("\n5. Test de dédoublonnage sémantique (tentative d'ajout d'une requête quasi-identique)...");
-    let duplicate_added = registry
-        .record_feedback(query, tool_name, FeedbackOutcome::Success)
-        .await?;
+    let similar = "Payment container crashing, get stdout output";
+    let after = registry.search(similar, 1).await?;
+    println!("3. search {similar:?}");
     println!(
-        "   -> Décision : {:?} (attendu : Duplicate)",
-        duplicate_added
+        "   -> {} ({:.4}, matched example {:?})",
+        after[0].entry.id, after[0].score, after[0].matched_example
     );
+
+    let again = registry
+        .record_feedback(query, id, FeedbackOutcome::Success)
+        .await?;
+    println!("4. same feedback again -> {again:?}");
 
     Ok(())
 }

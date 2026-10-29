@@ -38,12 +38,12 @@
 
   <!-- Inputs -->
   <rect class="box" x="20" y="48" width="160" height="64" rx="10"/>
-  <text class="title" x="100" y="76" text-anchor="middle">ToolDefinition</text>
-  <text class="sub" x="100" y="96" text-anchor="middle">MCP tools/list, JSON…</text>
+  <text class="title" x="100" y="76" text-anchor="middle">Entry</text>
+  <text class="sub" x="100" y="96" text-anchor="middle">id · text · examples · payload</text>
 
   <rect class="box" x="20" y="198" width="160" height="64" rx="10"/>
-  <text class="title" x="100" y="226" text-anchor="middle">User intent</text>
-  <text class="sub" x="100" y="246" text-anchor="middle">via search_tools</text>
+  <text class="title" x="100" y="226" text-anchor="middle">Query</text>
+  <text class="sub" x="100" y="246" text-anchor="middle">the user's words</text>
 
   <rect class="box" x="20" y="348" width="160" height="64" rx="10"/>
   <text class="title" x="100" y="376" text-anchor="middle">Outcome</text>
@@ -52,7 +52,7 @@
   <!-- Formatter -->
   <rect class="box" x="215" y="48" width="160" height="64" rx="10"/>
   <text class="title" x="295" y="76" text-anchor="middle">Formatter</text>
-  <text class="sub" x="295" y="96" text-anchor="middle">1 canonical + 1 / example</text>
+  <text class="sub" x="295" y="96" text-anchor="middle">text + 1 per example</text>
 
   <!-- Embedder (shared) -->
   <rect class="core" x="410" y="40" width="160" height="380" rx="12"/>
@@ -64,9 +64,9 @@
 
   <!-- ToolStore -->
   <rect class="box" x="605" y="40" width="185" height="80" rx="10"/>
-  <text class="title" x="697" y="64" text-anchor="middle">ToolStore</text>
+  <text class="title" x="697" y="64" text-anchor="middle">EntryStore</text>
   <rect class="chunk" x="620" y="78" width="58" height="28" rx="5"/>
-  <text class="sub" x="649" y="96" text-anchor="middle">base</text>
+  <text class="sub" x="649" y="96" text-anchor="middle">text</text>
   <rect class="chunk-ex" x="684" y="78" width="46" height="28" rx="5"/>
   <text class="sub" x="707" y="96" text-anchor="middle">ex</text>
   <rect class="chunk-ex" x="736" y="78" width="40" height="28" rx="5"/>
@@ -88,8 +88,8 @@
 
   <!-- Output -->
   <rect class="box" x="840" y="198" width="140" height="64" rx="10"/>
-  <text class="title" x="910" y="226" text-anchor="middle">Top-k tools</text>
-  <text class="sub" x="910" y="246" text-anchor="middle">to the LLM</text>
+  <text class="title" x="910" y="226" text-anchor="middle">Top-k entries</text>
+  <text class="sub" x="910" y="246" text-anchor="middle">with payloads</text>
 
   <!-- Wires -->
   <path class="wire" d="M180,80 H213" marker-end="url(#a)"/>

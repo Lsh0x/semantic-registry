@@ -3,3 +3,6 @@ changelog_update = true
 git_tag_enable = true
 git_release_enable = true
 semver_check = true
+# v0.1.0 and v0.2.0 already tag the tools-rag releases this crate grew from
+git_tag_name = "{{ package }}-v{{ version }}"
+git_release_name = "{{ package }} v{{ version }}"
