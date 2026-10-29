@@ -14,10 +14,13 @@ validated or corrected queries become examples that sharpen future searches.
 
 ```toml
 [dependencies]
-tools-rag = "0.1"
+tools-rag = "0.1"                                       # core only: bring your own Embedder
+# tools-rag = { version = "0.1", features = ["candle"] } # + local MiniLM embedder
 ```
 
 ## Quick start
+
+With the `candle` feature:
 
 ```rust
 use std::sync::Arc;
@@ -76,21 +79,22 @@ Ok(())
 Every stage is a trait: `Embedder`, `ToolStore`, `ToolRetriever`,
 `ToolFormatter`. Built-ins:
 
-- `CandleEmbedder` (feature `candle`, on by default): local inference, no API key.
+- `CandleEmbedder` (feature `candle`): local inference, no API key.
 - `InMemoryToolStore`, `JsonToolStore` (persists to a JSON file).
 - `CosineRetriever`: brute-force cosine scoring, fine up to a few thousand tools.
 - `McpParser`: converts an MCP `tools/list` response into `ToolDefinition`s.
 
-Build with `default-features = false` to bring your own embedder without the
-ML stack.
+No feature is enabled by default: the core depends only on `serde`,
+`serde_json`, `async-trait`, `thiserror` and `tokio` (`fs` only). Implement
+`Embedder` over any API or model, or enable `candle` for local inference.
 
 ## Examples
 
 ```bash
-cargo run --example basic
-cargo run --example feedback
-cargo run --example persistent_store
-cargo run --example llm_example_gen   # generates tool examples with Qwen2.5-0.5B
+cargo run --features candle --example basic
+cargo run --features candle --example feedback
+cargo run --features candle --example persistent_store
+cargo run --features candle --example llm_example_gen   # generates tool examples with Qwen2.5-0.5B
 ```
 
 The first run downloads the models from the Hugging Face Hub.
