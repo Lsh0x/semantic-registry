@@ -1,6 +1,15 @@
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # zip ^8 is pinned by candle-core 0.11 (fixed in zip 9). All three advisories
+    # target ZipArchive::extract(), which candle never calls: it only reads .npz
+    # members by name, and tools-rag loads safetensors. Drop once candle moves to zip 9.
+    { id = "RUSTSEC-2026-0367", reason = "extract() not reachable via candle-core" },
+    { id = "RUSTSEC-2026-0368", reason = "extract() not reachable via candle-core" },
+    { id = "RUSTSEC-2026-0369", reason = "extract() not reachable via candle-core" },
+    # paste is unmaintained with no successor; compile-time proc-macro pulled by gemm.
+    { id = "RUSTSEC-2024-0436", reason = "build-time only, no safe upgrade available" },
+]
 
 [licenses]
 version = 2
