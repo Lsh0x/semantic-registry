@@ -30,9 +30,9 @@ hands the payload back.
 
 - [Install](#install)
 - [Quick start](#quick-start)
+- [Learning from feedback](#learning-from-feedback)
 - [Bring your own parts](#bring-your-own-parts)
 - [Entries and payloads](#entries-and-payloads)
-- [Learning from feedback](#learning-from-feedback)
 - [Configuration](#configuration)
 - [Scoring](#scoring)
 - [Embedders](#embedders)
@@ -116,6 +116,133 @@ convert_currency   0.165  matched example: Some(0)
 Each hit carries the whole `Entry`, payload included (`hit.entry.payload`).
 `matched_example` is the index in `entry.examples` of the chunk that won, or
 `None` when the canonical `text` scored best.
+
+## Learning from feedback
+
+Once the caller has used an entry, tell the registry whether it was the right
+one. The query becomes a new example of the correct entry, behind guards that
+stop the registry from filling with duplicates or noise.
+
+The query was already embedded by `search()`; `CachedEmbedder` makes
+`record_feedback()` reuse that vector instead of running the model again.
+
+```rust
+use std::sync::Arc;
+
+use semantic_registry::embedder::{CachedEmbedder, CandleEmbedder};
+use semantic_registry::prelude::*;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let embedder = Arc::new(CachedEmbedder::new(
+        Arc::new(CandleEmbedder::minilm_v2().await?),
+        "all-MiniLM-L6-v2", // cache namespace: change it when the model changes
+        1024,               // in-process LRU capacity
+    ));
+    let registry: SemanticRegistry<()> =
+        SemanticRegistry::in_memory(embedder).with_config(RegistryConfig {
+            max_examples_per_entry: 20,
+            eviction_policy: EvictionPolicy::LeastRecentlyUsed,
+            ..RegistryConfig::default()
+        });
+
+    registry
+        .register(
+            Entry::new(
+                "get_pod_logs",
+                "Fetch stdout and stderr logs of a Kubernetes pod.",
+                (),
+            )
+            .with_examples(vec!["show me the logs of the api pod".to_string()]),
+        )
+        .await?;
+    registry
+        .register(Entry::new(
+            "rollback_deployment",
+            "Roll a Kubernetes deployment back to its previous revision.",
+            (),
+        ))
+        .await?;
+
+    // 1. The right entry was picked: absorb the phrasing as an example.
+    let query = "the payment pod keeps crashing, I need its output";
+    let best = registry.search(query, 1).await?.remove(0);
+    let decision = registry
+        .record_feedback(query, &best.entry.id, FeedbackOutcome::Success)
+        .await?;
+    println!("{} -> {decision:?}", best.entry.id);
+
+    // 2. The same feedback again is rejected as a duplicate.
+    let again = registry
+        .record_feedback(query, &best.entry.id, FeedbackOutcome::Success)
+        .await?;
+    println!("again -> {again:?}");
+
+    // 3. The wrong entry was picked: the user names the right one.
+    let query = "undo yesterday's checkout release";
+    let wrong = registry.search(query, 1).await?.remove(0);
+    let decision = registry
+        .record_feedback(
+            query,
+            &wrong.entry.id,
+            FeedbackOutcome::CorrectedTo {
+                correct_id: "rollback_deployment".to_string(),
+            },
+        )
+        .await?;
+
+    match decision {
+        FeedbackDecision::Added { evicted } => println!("learned, evicted {evicted:?}"),
+        FeedbackDecision::Duplicate { similarity } => println!("already known ({similarity:.2})"),
+        FeedbackDecision::BelowMinScore { score } => println!("too far off ({score:.2})"),
+        FeedbackDecision::Full => println!("example quota reached"),
+        FeedbackDecision::EntryNotFound => println!("no such entry"),
+        other => println!("{other:?}"), // the enum is #[non_exhaustive]
+    }
+
+    let after = registry.search(query, 1).await?.remove(0);
+    println!("now: {} ({:.3})", after.entry.id, after.score);
+    Ok(())
+}
+```
+
+```text
+get_pod_logs -> Added { evicted: [] }
+again -> Duplicate { similarity: 1.0 }
+learned, evicted []
+now: rollback_deployment (1.000)
+```
+
+### The guards
+
+`record_feedback` checks, in order:
+
+1. **Entry exists.** Otherwise `EntryNotFound`. With
+   `max_examples_per_entry == 0` feedback is disabled and every call returns
+   `Full`.
+2. **Not a duplicate.** If the query is within `dedup_similarity_threshold` of
+   any chunk of the entry (text or example), it brings nothing new:
+   `Duplicate`.
+3. **Confident enough.** A `Success` on a query far from the entry (below
+   `min_feedback_score`) is more likely a user giving up than a real match:
+   `BelowMinScore`. **Corrections skip this check**: they concern an entry the
+   search ranked badly, so a low score is expected.
+4. **Room left.** At `max_examples_per_entry`, the eviction policy frees a
+   slot, or `RejectWhenFull` answers `Full`.
+
+### Eviction policies
+
+| Policy | Evicts | Use when |
+|---|---|---|
+| `Fifo` *(default)* | The oldest example | Usage drifts over time |
+| `LeastRecentlyUsed` | The example that has gone longest without winning a search | Some phrasings are common, others one-offs |
+| `MostRedundantWithBase` | The example closest to `text`, so the one that adds least | You want examples to cover distinct phrasings |
+| `RejectWhenFull` | Nothing: new examples are refused | Curated examples must never be replaced |
+
+`LeastRecentlyUsed` relies on `SearchResult::matched_example`: every search
+that returns an entry through one of its examples marks that example as used.
+A newly added example counts as used. History lives in memory, so after a
+restart the policy behaves like `Fifo` until searches build it back.
 
 ## Bring your own parts
 
@@ -261,133 +388,6 @@ why is this query slow
 
 The last lines show a correction at work: once the user says a performance
 question belongs to `code_review`, close phrasings follow it.
-
-## Learning from feedback
-
-Once the caller has used an entry, tell the registry whether it was the right
-one. The query becomes a new example of the correct entry, behind guards that
-stop the registry from filling with duplicates or noise.
-
-The query was already embedded by `search()`; `CachedEmbedder` makes
-`record_feedback()` reuse that vector instead of running the model again.
-
-```rust
-use std::sync::Arc;
-
-use semantic_registry::embedder::{CachedEmbedder, CandleEmbedder};
-use semantic_registry::prelude::*;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let embedder = Arc::new(CachedEmbedder::new(
-        Arc::new(CandleEmbedder::minilm_v2().await?),
-        "all-MiniLM-L6-v2", // cache namespace: change it when the model changes
-        1024,               // in-process LRU capacity
-    ));
-    let registry: SemanticRegistry<()> =
-        SemanticRegistry::in_memory(embedder).with_config(RegistryConfig {
-            max_examples_per_entry: 20,
-            eviction_policy: EvictionPolicy::LeastRecentlyUsed,
-            ..RegistryConfig::default()
-        });
-
-    registry
-        .register(
-            Entry::new(
-                "get_pod_logs",
-                "Fetch stdout and stderr logs of a Kubernetes pod.",
-                (),
-            )
-            .with_examples(vec!["show me the logs of the api pod".to_string()]),
-        )
-        .await?;
-    registry
-        .register(Entry::new(
-            "rollback_deployment",
-            "Roll a Kubernetes deployment back to its previous revision.",
-            (),
-        ))
-        .await?;
-
-    // 1. The right entry was picked: absorb the phrasing as an example.
-    let query = "the payment pod keeps crashing, I need its output";
-    let best = registry.search(query, 1).await?.remove(0);
-    let decision = registry
-        .record_feedback(query, &best.entry.id, FeedbackOutcome::Success)
-        .await?;
-    println!("{} -> {decision:?}", best.entry.id);
-
-    // 2. The same feedback again is rejected as a duplicate.
-    let again = registry
-        .record_feedback(query, &best.entry.id, FeedbackOutcome::Success)
-        .await?;
-    println!("again -> {again:?}");
-
-    // 3. The wrong entry was picked: the user names the right one.
-    let query = "undo yesterday's checkout release";
-    let wrong = registry.search(query, 1).await?.remove(0);
-    let decision = registry
-        .record_feedback(
-            query,
-            &wrong.entry.id,
-            FeedbackOutcome::CorrectedTo {
-                correct_id: "rollback_deployment".to_string(),
-            },
-        )
-        .await?;
-
-    match decision {
-        FeedbackDecision::Added { evicted } => println!("learned, evicted {evicted:?}"),
-        FeedbackDecision::Duplicate { similarity } => println!("already known ({similarity:.2})"),
-        FeedbackDecision::BelowMinScore { score } => println!("too far off ({score:.2})"),
-        FeedbackDecision::Full => println!("example quota reached"),
-        FeedbackDecision::EntryNotFound => println!("no such entry"),
-        other => println!("{other:?}"), // the enum is #[non_exhaustive]
-    }
-
-    let after = registry.search(query, 1).await?.remove(0);
-    println!("now: {} ({:.3})", after.entry.id, after.score);
-    Ok(())
-}
-```
-
-```text
-get_pod_logs -> Added { evicted: [] }
-again -> Duplicate { similarity: 1.0 }
-learned, evicted []
-now: rollback_deployment (1.000)
-```
-
-### The guards
-
-`record_feedback` checks, in order:
-
-1. **Entry exists.** Otherwise `EntryNotFound`. With
-   `max_examples_per_entry == 0` feedback is disabled and every call returns
-   `Full`.
-2. **Not a duplicate.** If the query is within `dedup_similarity_threshold` of
-   any chunk of the entry (text or example), it brings nothing new:
-   `Duplicate`.
-3. **Confident enough.** A `Success` on a query far from the entry (below
-   `min_feedback_score`) is more likely a user giving up than a real match:
-   `BelowMinScore`. **Corrections skip this check**: they concern an entry the
-   search ranked badly, so a low score is expected.
-4. **Room left.** At `max_examples_per_entry`, the eviction policy frees a
-   slot, or `RejectWhenFull` answers `Full`.
-
-### Eviction policies
-
-| Policy | Evicts | Use when |
-|---|---|---|
-| `Fifo` *(default)* | The oldest example | Usage drifts over time |
-| `LeastRecentlyUsed` | The example that has gone longest without winning a search | Some phrasings are common, others one-offs |
-| `MostRedundantWithBase` | The example closest to `text`, so the one that adds least | You want examples to cover distinct phrasings |
-| `RejectWhenFull` | Nothing: new examples are refused | Curated examples must never be replaced |
-
-`LeastRecentlyUsed` relies on `SearchResult::matched_example`: every search
-that returns an entry through one of its examples marks that example as used.
-A newly added example counts as used. History lives in memory, so after a
-restart the policy behaves like `Fifo` until searches build it back.
 
 ## Configuration
 
