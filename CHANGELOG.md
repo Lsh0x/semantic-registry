@@ -8,8 +8,24 @@ Maintained by [release-plz](https://release-plz.dev/) from
 
 ### Added
 
-- *(mcp)* search_definition for any search meta-tool ([#12](https://github.com/Lsh0x/semantic-registry/pull/12))
-- [**breaking**] remove entries, batch embeddings, reuse unchanged vectors ([#10](https://github.com/Lsh0x/semantic-registry/pull/10))
+- `SemanticRegistry::remove(id)`: deletes an entry, its vectors and its usage
+  history, and returns whether it existed
+- `Embedder::embed_batch`, with a sequential default. `CandleEmbedder` batches
+  for real with masked mean pooling: same vectors as one by one, 7.6x faster
+  on 64 texts. `CachedEmbedder` sends only its misses, in one call
+- `register` embeds an entry's new chunks in one batch and reuses the stored
+  vectors of unchanged chunks: re-registering an unchanged entry embeds
+  nothing
+- `mcp::search_definition(name, description)` for any search meta-tool
+  (`find_agent`, `search_skills`…); `search_tools_definition()` is now a
+  shortcut for it
+- Every doc comment is in English, and `missing_docs` is enforced
+
+### Breaking
+
+- `EntryStore` has a new required method `remove`
+- `EvictionPolicy` and `FeedbackDecision` are `#[non_exhaustive]`: a `match`
+  on them outside the crate needs a `_ =>` arm
 
 ## [0.1.0](https://github.com/Lsh0x/semantic-registry/releases/tag/semantic-registry-v0.1.0) - 2026-10-29
 
