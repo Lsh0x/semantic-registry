@@ -241,8 +241,12 @@ now: rollback_deployment (1.000)
 
 `LeastRecentlyUsed` relies on `SearchResult::matched_example`: every search
 that returns an entry through one of its examples marks that example as used.
-A newly added example counts as used. History lives in memory, so after a
-restart the policy behaves like `Fifo` until searches build it back.
+A newly added example counts as used. Uses are also handed to the store
+(`EntryStore::record_example_use`): `JsonStore` persists them, so the history
+survives a restart. It writes them with its next change, or when you call
+`store.flush()`, so searching never rewrites the file. With a store that does
+not persist uses, such as `InMemoryStore`, the history restarts empty and the
+policy behaves like `Fifo` until searches build it back.
 
 ## Bring your own parts
 
@@ -489,7 +493,7 @@ different models are not comparable.
 | Store | Persistence |
 |---|---|
 | `InMemoryStore` | None |
-| `JsonStore` | A JSON file, rewritten on each change; reloaded with embeddings, so a restart recomputes nothing |
+| `JsonStore` | A JSON file, rewritten on each change; reloaded with embeddings and example uses, so a restart recomputes nothing and keeps the LRU history (call `flush()` before exiting) |
 
 ```rust
 let store = Arc::new(JsonStore::<MyPayload>::load_or_create("./data/entries.json").await?);
@@ -697,7 +701,8 @@ impl EntryStore<Value> for MeiliBackend {
 | `get_embeddings` | `get_documents` on `chunks` with filter `entry = "…"` and `retrieve_vectors`; canonical chunk first, then examples in `entry.examples` order |
 | `append_example` | Add the text to `entry.examples` in `entries`; add one chunk |
 | `remove_example(i)` | Remove `entry.examples[i]` in `entries`; delete the chunk with filter `entry = "…" AND example = "…"` |
-| `list_all` | Not called when Meilisearch is the retriever: only `CosineRetriever` uses it |
+| `list_all` | Used by `sync` to find missing entries, and by `CosineRetriever` |
+| `record_example_use`, `example_uses` | Optional, for a persistent LRU history: store each example's last use on its chunk document |
 
 Chunk ids must be unique and contain only `a-z A-Z 0-9 - _`: derive them from
 the entry id and a hash of the example text.
@@ -800,7 +805,9 @@ as given: wrap your `Embedder` if the model needs a prefix on them.
   and reports consistently; different entries proceed in parallel. Several
   registries or processes sharing one store are not coordinated with each
   other.
-- **LRU history is in memory**, and restarts empty.
+- **LRU history persists only with a store that records uses** (`JsonStore`
+  does; `InMemoryStore` does not), and `JsonStore` writes uses recorded since
+  its last change only on `flush()` or its next change.
 - **`JsonStore` rewrites the whole file** on each change: fine for hundreds
   of entries, not for a write-heavy service.
 - **Brute-force search** in `CosineRetriever`, linear in the number of
