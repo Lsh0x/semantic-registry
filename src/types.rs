@@ -107,7 +107,7 @@ pub struct RegistryConfig {
     /// Similarité cosinus à partir de laquelle une requête est jugée redondante (par défaut : 0.85)
     pub dedup_similarity_threshold: f32,
     /// Score MaxSim minimal entre la requête et l'outil pour accepter un feedback `Success`
-    /// (par défaut : 0.40). Ne s'applique pas à `CorrectedTo` : une correction porte justement
+    /// (par défaut : 0.30). Ne s'applique pas à `CorrectedTo` : une correction porte justement
     /// sur un outil que la recherche a mal classé.
     pub min_feedback_score: f32,
     /// Politique d'éviction quand le plafond est atteint (par défaut : `Fifo`)
@@ -121,7 +121,7 @@ impl Default for RegistryConfig {
         Self {
             max_examples_per_tool: 10,
             dedup_similarity_threshold: 0.85,
-            min_feedback_score: 0.40,
+            min_feedback_score: 0.30,
             eviction_policy: EvictionPolicy::Fifo,
             min_search_score: 0.0,
         }

@@ -82,7 +82,7 @@
   <rect class="box" x="605" y="330" width="185" height="110" rx="10"/>
   <text class="title" x="697" y="356" text-anchor="middle">Guards</text>
   <text class="sub" x="697" y="378" text-anchor="middle">dedup ≥ 0.85</text>
-  <text class="sub" x="697" y="396" text-anchor="middle">confidence ≥ 0.40</text>
+  <text class="sub" x="697" y="396" text-anchor="middle">confidence ≥ 0.30</text>
   <text class="sub" x="697" y="414" text-anchor="middle">cap · FIFO / LRU /</text>
   <text class="sub" x="697" y="430" text-anchor="middle">most-redundant</text>
 
