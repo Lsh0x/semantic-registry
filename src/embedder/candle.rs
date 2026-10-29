@@ -51,8 +51,11 @@ impl CandleEmbedder {
         let config: Config = serde_json::from_str(&config_str)
             .map_err(|e| ToolRagError::ParseError(e.to_string()))?;
 
-        let tokenizer = Tokenizer::from_file(tokenizer_filename)
+        let mut tokenizer = Tokenizer::from_file(tokenizer_filename)
             .map_err(|e| ToolRagError::ParseError(e.to_string()))?;
+        // Le tokenizer.json de MiniLM complète à 128 tokens : sans masque dans le mean
+        // pooling, les [PAD] domineraient le vecteur et rapprocheraient toutes les phrases.
+        tokenizer.with_padding(None);
 
         let device = Device::Cpu;
 
