@@ -63,5 +63,9 @@ name = "persistent_store"
 required-features = ["candle"]
 
 [[example]]
+name = "prompt_routing"
+required-features = ["candle"]
+
+[[example]]
 name = "llm_example_gen"
 required-features = ["candle"]

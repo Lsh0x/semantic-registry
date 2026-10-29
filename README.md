@@ -145,6 +145,50 @@ let tools: SemanticRegistry<ToolSpec> = SemanticRegistry::in_memory(embedder.clo
 let skills: SemanticRegistry<SkillSpec> = SemanticRegistry::in_memory(embedder.clone());
 ```
 
+### Example: picking a prompt
+
+[`examples/prompt_routing.rs`](examples/prompt_routing.rs) keeps prompt
+templates in the payload, picks one per request, and falls back to a generic
+prompt when nothing scores above `min_search_score`:
+
+```rust
+#[derive(Clone, Debug)]
+struct Prompt {
+    system: &'static str,
+    template: &'static str,
+}
+
+let registry: SemanticRegistry<Prompt> =
+    SemanticRegistry::in_memory(embedder).with_config(RegistryConfig {
+        min_search_score: 0.30, // below this, no template fits
+        ..RegistryConfig::default()
+    });
+
+match registry.search(request, 1).await?.into_iter().next() {
+    Some(hit) => println!("{}", hit.entry.payload.render(request)),
+    None => println!("{}", FALLBACK.render(request)),
+}
+```
+
+```text
+is this rust function safe? fn get(v: &[u8], i: usize) -> u8 { v[i] }
+  -> code_review (0.437)
+what does SELECT name FROM users WHERE age > 30 GROUP BY name do
+  -> explain_sql (0.404)
+give me a commit message, I renamed the crate and its types
+  -> commit_message (0.533)
+what's a good name for a cat
+  -> no template fits, fallback
+
+why is this query slow
+  picked explain_sql, corrected to code_review: Added { evicted: [] }
+  "why is this query slow" -> code_review (1.000)
+  "how do I make this query faster" -> code_review (0.895)
+```
+
+The last lines show a correction at work: once the user says a performance
+question belongs to `code_review`, close phrasings follow it.
+
 ## Learning from feedback
 
 Once the caller has used an entry, tell the registry whether it was the right
@@ -655,6 +699,7 @@ as given: wrap your `Embedder` if the model needs a prefix on them.
 cargo run --features candle --example basic             # register with examples, search
 cargo run --features candle,cache --example feedback    # feedback loop with the cache
 cargo run --features candle --example persistent_store  # JsonStore across runs
+cargo run --features candle --example prompt_routing    # pick a prompt template, with fallback
 cargo run --features candle --example llm_example_gen   # generate examples with Qwen2.5-0.5B
 ```
 
