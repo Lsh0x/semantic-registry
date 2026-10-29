@@ -538,8 +538,13 @@ the tool name and a hash of the example text.
 
 ## MCP and the `search_tools` meta-tool
 
-`McpParser` turns an MCP `tools/list` response into `ToolDefinition`s
-(`inputSchema` becomes `parameters`):
+`tools-rag` is not an MCP server or client: it does not speak the protocol.
+Transport, authentication, and how the tools found are made callable are
+your application's choices. The crate provides the two protocol-agnostic
+pieces.
+
+**Ingesting MCP tools.** `McpParser` turns a `tools/list` response into
+`ToolDefinition`s (`inputSchema` becomes `parameters`):
 
 ```rust
 use tools_rag::parsers::mcp::McpParser;
@@ -550,10 +555,29 @@ for tool in McpParser::parse_tools_list(&response) {
 }
 ```
 
-Instead of handing the LLM every tool, hand it one:
-`registry.meta_tool_definition()` returns `search_tools(query)`. When the
-model calls it, run `registry.search(query, k)` and expose the returned tools
-for the next turn. Once a tool has run, call `record_feedback`.
+**Exposing search.** Instead of handing the LLM every tool, hand it one:
+`registry.meta_tool_definition()` returns the definition of
+`search_tools(query)`. Declare it in your agent loop or MCP server, and
+answer its calls with `registry.search`. `SearchResult` implements
+`Serialize`, so the hits go back as they are:
+
+```rust
+/// Answers a `search_tools` call, whatever transport delivered it
+async fn handle_search_tools(
+    registry: &ToolRegistry,
+    arguments: &serde_json::Value,
+) -> tools_rag::errors::Result<serde_json::Value> {
+    let query = arguments["query"].as_str().unwrap_or_default();
+    let hits = registry.search(query, 5).await?;
+    Ok(serde_json::json!({ "tools": hits }))
+}
+```
+
+The model then calls the tools it found. In an MCP server, either add them to
+your `tools/list` and send `notifications/tools/list_changed`, or expose a
+generic `call_tool(name, arguments)` that forwards to the upstream server;
+the second works with clients that ignore list changes. Once a tool has run,
+call `record_feedback`.
 
 ## Custom formatter
 
