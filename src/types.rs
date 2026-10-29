@@ -1,20 +1,21 @@
 use serde::{Deserialize, Serialize};
 
-/// Une entrée du registre : ce que la bibliothèque indexe, et le `payload` qu'elle rend tel quel
+/// A registry entry: what the library indexes, plus a `payload` it hands back untouched.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Entry<P> {
-    /// Identifiant unique (nom d'outil, clé de skill, nom de table…)
+    /// Unique key: a tool name, a skill id, a table name…
     pub id: String,
-    /// Texte du chunk canonique
+    /// Text of the canonical chunk.
     pub text: String,
-    /// Formulations d'utilisateurs : fournies à l'enregistrement, puis enrichies par le feedback
+    /// Phrasings users might type: seeded at registration, then grown by feedback.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub examples: Vec<String>,
-    /// Données de l'appelant (schéma d'outil, config, `()`…), jamais lues par la bibliothèque
+    /// Caller data (a tool schema, a config, `()`…). Never read by the library.
     pub payload: P,
 }
 
 impl<P> Entry<P> {
+    /// An entry without examples.
     pub fn new(id: impl Into<String>, text: impl Into<String>, payload: P) -> Self {
         Self {
             id: id.into(),
@@ -24,67 +25,76 @@ impl<P> Entry<P> {
         }
     }
 
+    /// Replaces the examples.
     pub fn with_examples(mut self, examples: Vec<String>) -> Self {
         self.examples = examples;
         self
     }
 }
 
-/// Résultat d'une recherche avec son score de similarité
+/// A search hit and its similarity score.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SearchResult<P> {
+    /// The matching entry, payload included.
     pub entry: Entry<P>,
+    /// Similarity with the query, per the [`ScoringStrategy`].
     pub score: f32,
-    /// Index (dans `entry.examples`) de l'exemple qui a donné le score, `None` si c'est le
-    /// chunk canonique. Alimente `EvictionPolicy::LeastRecentlyUsed`.
+    /// Index in `entry.examples` of the example that produced the score, or `None` when the
+    /// canonical chunk did. Feeds `EvictionPolicy::LeastRecentlyUsed`.
     #[serde(default)]
     pub matched_example: Option<usize>,
 }
 
-/// Retour d'expérience sur une entrée choisie à partir d'une recherche
+/// What happened with an entry chosen from a search.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FeedbackOutcome {
-    /// L'entrée choisie était la bonne
+    /// The chosen entry was the right one.
     Success,
-    /// L'entrée choisie était mauvaise : `correct_id` est celle qui aurait dû l'être
-    CorrectedTo { correct_id: String },
+    /// The chosen entry was wrong: `correct_id` is the one that should have been chosen.
+    CorrectedTo {
+        /// Id of the entry that should have been chosen.
+        correct_id: String,
+    },
 }
 
-/// Politique appliquée quand une entrée a atteint `max_examples_per_entry`
+/// What to do when an entry has reached `max_examples_per_entry`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EvictionPolicy {
-    /// Supprime le plus ancien exemple (ring buffer)
+    /// Evict the oldest example (ring buffer).
     #[default]
     Fifo,
-    /// Supprime l'exemple le plus proche du chunk canonique (le moins informatif)
+    /// Evict the example closest to the canonical chunk, the one that adds least.
     MostRedundantWithBase,
-    /// Supprime l'exemple qui a gagné une recherche le moins récemment (jamais = le plus ancien).
-    /// L'historique d'usage vit dans le `SemanticRegistry`, en mémoire : il repart de zéro au
-    /// redémarrage, où la politique se comporte comme `Fifo` jusqu'aux premières recherches.
+    /// Evict the example that has gone longest without winning a search (never = oldest).
+    /// Usage history lives in the `SemanticRegistry`, in memory: it restarts empty, and the
+    /// policy behaves like `Fifo` until searches build it back.
     LeastRecentlyUsed,
-    /// Conservateur : refuse le nouvel exemple tant que le quota est atteint
+    /// Conservative: refuse new examples while the quota is reached.
     RejectWhenFull,
 }
 
-/// Combinaison des scores du chunk canonique et des exemples d'une entrée
+/// How the canonical chunk's score and the examples' scores combine into an entry's score.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum ScoringStrategy {
-    /// MaxSim pur : `max(score_base, max(score_exemples))`
+    /// Plain MaxSim: `max(canonical, best_example)`.
     #[default]
     MaxSim,
-    /// MaxSim pondéré : `max(score_base, max(score_exemples) * example_weight)`.
-    /// Un poids < 1.0 limite l'effet « aimant » des entrées qui accumulent du feedback.
-    WeightedMaxSim { example_weight: f32 },
+    /// Weighted MaxSim: `max(canonical, best_example * example_weight)`.
+    /// A weight below 1.0 keeps entries that accumulate feedback from becoming magnets.
+    WeightedMaxSim {
+        /// Multiplier applied to example scores, usually below 1.0.
+        example_weight: f32,
+    },
 }
 
 impl ScoringStrategy {
-    /// Calcule le score d'une entrée. `base` est la similarité avec le chunk canonique,
-    /// `best_example` la meilleure similarité parmi les exemples (si l'entrée en a).
+    /// Score of an entry. `base` is the similarity with the canonical chunk, `best_example`
+    /// the best similarity among the examples, if the entry has any.
     pub fn combine(&self, base: f32, best_example: Option<f32>) -> f32 {
         self.combine_with_source(base, best_example).0
     }
 
-    /// Comme [`combine`](Self::combine), et indique si c'est l'exemple qui l'emporte
+    /// Like [`combine`](Self::combine), and whether the example won.
     pub fn combine_with_source(&self, base: f32, best_example: Option<f32>) -> (f32, bool) {
         let weighted = match (self, best_example) {
             (_, None) => return (base, false),
@@ -99,20 +109,20 @@ impl ScoringStrategy {
     }
 }
 
-/// Configuration de la politique métier du [`SemanticRegistry`](crate::registry::SemanticRegistry)
+/// The policy of a [`SemanticRegistry`](crate::registry::SemanticRegistry).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegistryConfig {
-    /// Plafond d'exemples conservés par entrée (par défaut : 10). `0` désactive le feedback.
+    /// Example cap per entry (default: 10). `0` disables feedback.
     pub max_examples_per_entry: usize,
-    /// Similarité cosinus à partir de laquelle une requête est jugée redondante (par défaut : 0.85)
+    /// Cosine similarity from which a query counts as a duplicate (default: 0.85).
     pub dedup_similarity_threshold: f32,
-    /// Score MaxSim minimal entre la requête et l'entrée pour accepter un feedback `Success`
-    /// (par défaut : 0.30). Ne s'applique pas à `CorrectedTo` : une correction porte justement
-    /// sur une entrée que la recherche a mal classée.
+    /// Minimum MaxSim score between the query and the entry to accept a `Success` feedback
+    /// (default: 0.30). Does not apply to `CorrectedTo`: a correction is about an entry the
+    /// search ranked badly, so a low score is expected.
     pub min_feedback_score: f32,
-    /// Politique d'éviction quand le plafond est atteint (par défaut : `Fifo`)
+    /// What to evict once the cap is reached (default: `Fifo`).
     pub eviction_policy: EvictionPolicy,
-    /// Les résultats de `search()` sous ce score sont écartés (par défaut : 0.0, aucun filtre)
+    /// `search()` drops results below this score (default: 0.0, no cutoff).
     pub min_search_score: f32,
 }
 
@@ -128,25 +138,33 @@ impl Default for RegistryConfig {
     }
 }
 
-/// Décision prise par `record_feedback`, pour l'observabilité côté appelant
+/// What `record_feedback` did, and why.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FeedbackDecision {
-    /// La requête a été ajoutée comme exemple
+    /// The query was added as an example.
     Added {
-        /// Exemples supprimés pour respecter le plafond
+        /// Examples evicted to stay under the cap.
         evicted: Vec<String>,
     },
-    /// Rejetée : trop proche d'un chunk existant
-    Duplicate { similarity: f32 },
-    /// Rejetée : la requête est trop éloignée de l'entrée pour être un signal fiable
-    BelowMinScore { score: f32 },
-    /// Rejetée : quota atteint avec `RejectWhenFull`, ou feedback désactivé (`max_examples_per_entry == 0`)
+    /// Rejected: too close to an existing chunk.
+    Duplicate {
+        /// Similarity with the closest chunk.
+        similarity: f32,
+    },
+    /// Rejected: the query is too far from the entry to be a reliable signal.
+    BelowMinScore {
+        /// The query's best similarity with the entry.
+        score: f32,
+    },
+    /// Rejected: quota reached with `RejectWhenFull`, or feedback disabled
+    /// (`max_examples_per_entry == 0`).
     Full,
-    /// L'entrée cible n'existe pas dans le store
+    /// The target entry is not in the store.
     EntryNotFound,
 }
 
 impl FeedbackDecision {
+    /// Whether the query was added as an example.
     pub fn is_added(&self) -> bool {
         matches!(self, Self::Added { .. })
     }

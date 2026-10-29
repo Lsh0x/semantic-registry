@@ -7,8 +7,8 @@ use semantic_registry::error::{Error, Result};
 use semantic_registry::prelude::*;
 use semantic_registry::{CosineRetriever, InMemoryStore};
 
-/// Embedder déterministe : le texte est le vecteur lui-même, ex. `"1,0,0"`.
-/// Permet de contrôler exactement les similarités cosinus dans les tests.
+/// Deterministic embedder: the text is the vector itself, e.g. `"1,0,0"`, so tests
+/// control cosine similarities exactly.
 pub struct VecEmbedder;
 
 #[async_trait]
@@ -41,12 +41,31 @@ pub fn registry_with_strategy(
     (registry, store)
 }
 
-/// Config permissive : seuls les garde-fous explicitement testés sont actifs
+/// Permissive config: only the guards a test sets explicitly are active
 pub fn permissive() -> RegistryConfig {
     RegistryConfig {
         max_examples_per_entry: 10,
         dedup_similarity_threshold: 0.99,
         min_feedback_score: 0.0,
         ..RegistryConfig::default()
+    }
+}
+
+/// [`VecEmbedder`] that records the texts of every `embed_batch` call
+#[derive(Default)]
+pub struct RecordingEmbedder {
+    pub batches: std::sync::Mutex<Vec<Vec<String>>>,
+}
+
+#[async_trait]
+impl Embedder for RecordingEmbedder {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        self.batches.lock().unwrap().push(vec![text.to_string()]);
+        VecEmbedder.embed(text).await
+    }
+
+    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.batches.lock().unwrap().push(texts.to_vec());
+        VecEmbedder.embed_batch(texts).await
     }
 }

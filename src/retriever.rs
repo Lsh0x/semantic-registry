@@ -5,7 +5,7 @@ use crate::error::Result;
 use crate::traits::{Embedder, EntryStore, Payload, Retriever};
 use crate::types::{ScoringStrategy, SearchResult};
 
-/// Similarité cosinus, 0.0 pour des vecteurs vides, nuls ou de dimensions différentes
+/// Cosine similarity; 0.0 for empty or zero vectors, or vectors of different lengths.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -16,12 +16,12 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if norm_a == 0.0 || norm_b == 0.0 {
         0.0
     } else {
-        // Les arrondis f32 peuvent dépasser 1.0 pour deux vecteurs identiques
+        // f32 rounding can exceed 1.0 for identical vectors
         (dot / (norm_a * norm_b)).clamp(-1.0, 1.0)
     }
 }
 
-/// Recherche exhaustive par similarité cosinus sur tous les chunks du store
+/// Brute-force cosine search over every chunk in the store.
 pub struct CosineRetriever<P> {
     store: Arc<dyn EntryStore<P>>,
     embedder: Arc<dyn Embedder>,
@@ -29,6 +29,7 @@ pub struct CosineRetriever<P> {
 }
 
 impl<P: Payload> CosineRetriever<P> {
+    /// Searches `store`, embedding queries with `embedder` (the one used for the entries).
     pub fn new(store: Arc<dyn EntryStore<P>>, embedder: Arc<dyn Embedder>) -> Self {
         Self {
             store,
@@ -37,18 +38,19 @@ impl<P: Payload> CosineRetriever<P> {
         }
     }
 
+    /// Replaces the scoring strategy (default: [`ScoringStrategy::MaxSim`]).
     pub fn with_strategy(mut self, strategy: ScoringStrategy) -> Self {
         self.strategy = strategy;
         self
     }
 
-    /// Score d'une entrée selon la stratégie. Par convention, `embeddings[0]` est le chunk
-    /// canonique et `embeddings[1..]` les exemples.
+    /// Score of an entry under the strategy. `embeddings[0]` is the canonical chunk and
+    /// `embeddings[1..]` the examples.
     pub fn score(&self, query_vec: &[f32], embeddings: &[Vec<f32>]) -> f32 {
         self.score_with_match(query_vec, embeddings).0
     }
 
-    /// Score et index de l'exemple gagnant (`None` si le chunk canonique l'emporte)
+    /// Score, and index of the winning example (`None` when the canonical chunk wins).
     pub fn score_with_match(
         &self,
         query_vec: &[f32],

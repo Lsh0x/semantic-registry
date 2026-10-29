@@ -82,7 +82,7 @@ async fn success_feedback_adds_example_and_improves_ranking() {
         .await
         .unwrap();
 
-    // Avant feedback, "metrics" gagne sur cette requête
+    // Before feedback, "metrics" wins this query
     let before = registry.search("0.5,1,0.3", 1).await.unwrap();
     assert_eq!(before[0].entry.id, "metrics");
 
@@ -234,7 +234,7 @@ async fn fifo_evicts_oldest_example() {
         }
     );
     assert_eq!(examples_of(&store, "x").await, ["0,0,1", "0,1,1"]);
-    // Les embeddings restent alignés sur les exemples
+    // Embeddings stay aligned with examples
     assert_eq!(
         store.get_embeddings("x").await.unwrap().unwrap(),
         vec![
@@ -317,12 +317,12 @@ async fn eviction_shrinks_entries_registered_above_the_cap() {
 async fn weighted_max_sim_dampens_example_heavy_entries() {
     let setup = |strategy| async move {
         let (registry, _) = registry_with_strategy(permissive(), strategy);
-        // "canonical" : description proche de la requête (cos ≈ 0.70)
+        // "canonical": text close to the query (cos ≈ 0.70)
         registry
             .register(entry("canonical", "0.7,0.714,0"))
             .await
             .unwrap();
-        // "magnet" : description hors-sujet, mais un exemple appris proche (cos = 0.8)
+        // "magnet": off-topic text, but a learned example close to the query (cos = 0.8)
         registry
             .register(entry("magnet", "0,1,0").with_examples(vec!["0.8,0.6,0".into()]))
             .await
@@ -373,7 +373,7 @@ async fn least_recently_used_evicts_example_not_hit_by_searches() {
         .await
         .unwrap();
 
-    // Le plus ancien exemple ("0,1,0") est le seul à servir : c'est "0,0,1" qui part
+    // The oldest example ("0,1,0") is the only one used, so "0,0,1" goes
     registry.search("0,1,0.1", 1).await.unwrap();
     let decision = registry
         .record_feedback("0,1,1", "x", FeedbackOutcome::Success)
@@ -386,7 +386,7 @@ async fn least_recently_used_evicts_example_not_hit_by_searches() {
         }
     );
 
-    // L'exemple tout juste ajouté compte comme utilisé : "0,1,0", touché avant, part ensuite
+    // The example just added counts as used: "0,1,0", touched earlier, goes next
     let decision = registry
         .record_feedback("-1,1,0", "x", FeedbackOutcome::Success)
         .await
@@ -426,7 +426,7 @@ impl Formatter<()> for Shift {
         entry.text.clone()
     }
 
-    // Les exemples sont embarqués avec une composante en plus : "a,b" -> "a,b,1"
+    // Examples are embedded with one extra component: "a,b" -> "a,b,1"
     fn example_text(&self, _entry: &Entry<()>, example: &str) -> String {
         format!("{example},1")
     }
@@ -453,7 +453,7 @@ async fn feedback_examples_go_through_the_formatter() {
         .await
         .unwrap();
 
-    // Exemple semé et exemple appris embarqués de la même façon ; le texte reste brut
+    // Seeded and learned examples are embedded the same way; the text stays raw
     assert_eq!(
         store.get_embeddings("x").await.unwrap().unwrap(),
         vec![
@@ -463,4 +463,123 @@ async fn feedback_examples_go_through_the_formatter() {
         ]
     );
     assert_eq!(examples_of(&store, "x").await, ["0,1", "1,1"]);
+}
+
+fn recording_registry() -> (
+    SemanticRegistry<()>,
+    Arc<InMemoryStore<()>>,
+    Arc<common::RecordingEmbedder>,
+) {
+    let store = Arc::new(InMemoryStore::new());
+    let embedder = Arc::new(common::RecordingEmbedder::default());
+    let retriever = Arc::new(semantic_registry::CosineRetriever::new(
+        store.clone(),
+        embedder.clone(),
+    ));
+    let registry =
+        SemanticRegistry::new(store.clone(), embedder.clone(), retriever).with_config(permissive());
+    (registry, store, embedder)
+}
+
+#[tokio::test]
+async fn register_embeds_all_chunks_in_one_batch() {
+    let (registry, _, embedder) = recording_registry();
+    registry
+        .register(entry("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *embedder.batches.lock().unwrap(),
+        [vec!["1,0,0", "0,1,0", "0,0,1"]]
+    );
+}
+
+#[tokio::test]
+async fn reregistering_reuses_vectors_of_unchanged_chunks() {
+    let (registry, store, embedder) = recording_registry();
+    registry
+        .register(entry("x", "1,0,0").with_examples(vec!["0,1,0".into()]))
+        .await
+        .unwrap();
+
+    // Same text and example, one new example: only the new one is embedded
+    registry
+        .register(entry("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
+        .await
+        .unwrap();
+    // Nothing changed: nothing is embedded
+    registry
+        .register(entry("x", "1,0,0").with_examples(vec!["0,1,0".into(), "0,0,1".into()]))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *embedder.batches.lock().unwrap(),
+        [vec!["1,0,0", "0,1,0"], vec!["0,0,1"]]
+    );
+    assert_eq!(
+        store.get_embeddings("x").await.unwrap().unwrap(),
+        vec![
+            vec![1.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 1.0]
+        ]
+    );
+}
+
+#[tokio::test]
+async fn reregistering_reuses_vectors_learned_through_feedback() {
+    let (registry, _, embedder) = recording_registry();
+    registry.register(entry("x", "1,0,0")).await.unwrap();
+    registry
+        .record_feedback("0,1,0", "x", FeedbackOutcome::Success)
+        .await
+        .unwrap();
+
+    // Re-registering with the learned example kept: no new embedding
+    registry
+        .register(entry("x", "1,0,0").with_examples(vec!["0,1,0".into()]))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *embedder.batches.lock().unwrap(),
+        [vec!["1,0,0"], vec!["0,1,0"]]
+    );
+}
+
+#[tokio::test]
+async fn remove_deletes_the_entry_and_its_vectors() {
+    let (registry, store) = registry(permissive());
+    registry.register(entry("x", "1,0,0")).await.unwrap();
+    registry.register(entry("y", "0,1,0")).await.unwrap();
+
+    assert!(registry.remove("x").await.unwrap());
+    assert!(!registry.remove("x").await.unwrap());
+
+    assert!(store.get("x").await.unwrap().is_none());
+    assert!(store.get_embeddings("x").await.unwrap().is_none());
+    let hits = registry.search("1,0,0", 10).await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].entry.id, "y");
+    assert_eq!(
+        registry
+            .record_feedback("1,0,0", "x", FeedbackOutcome::Success)
+            .await
+            .unwrap(),
+        FeedbackDecision::EntryNotFound
+    );
+}
+
+#[tokio::test]
+async fn removed_entry_starts_fresh_when_registered_again() {
+    let (registry, store, embedder) = recording_registry();
+    registry.register(entry("x", "1,0,0")).await.unwrap();
+    registry.remove("x").await.unwrap();
+    registry.register(entry("x", "1,0,0")).await.unwrap();
+
+    // No stale vectors: the text is embedded again
+    assert_eq!(embedder.batches.lock().unwrap().len(), 2);
+    assert!(store.get("x").await.unwrap().unwrap().examples.is_empty());
 }

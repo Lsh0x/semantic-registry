@@ -425,6 +425,11 @@ impl Embedder for ApiEmbedder {
 }
 ```
 
+`register` sends all of an entry's new chunks to `embed_batch` at once. Its
+default calls `embed` once per text; override it when your API or model takes
+a batch. `CandleEmbedder` does: 64 texts embed in 61 ms instead of 461 ms on
+an M-series CPU, with the same vectors as one by one.
+
 Every entry and query must go through the same model: vectors from
 different models are not comparable.
 
@@ -440,11 +445,36 @@ let store = Arc::new(JsonStore::<MyPayload>::load_or_create("./data/entries.json
 let retriever = Arc::new(CosineRetriever::new(store.clone(), embedder.clone()));
 let registry = SemanticRegistry::new(store.clone(), embedder, retriever);
 
-// Embed only the entries that are not on disk yet
+// Register only what is not on disk yet: the stored version keeps its learned examples
 if store.get("convert_currency").await?.is_none() {
     registry.register(currency).await?;
 }
 ```
+
+### Updating and removing entries
+
+- **`register` replaces** the entry with the same id. Chunks whose text has
+  not changed keep their stored vectors; only new or edited chunks are
+  embedded, in one batch. Re-registering an unchanged entry embeds nothing.
+- **Replacing also replaces the examples**, including those learned through
+  feedback. To refresh an entry without losing them, start from the stored
+  version:
+
+  ```rust
+  // Keep the stored examples, seeded and learned; take the new text and payload
+  let entry = match store.get(&fresh.id).await? {
+      Some(stored) => Entry { text: fresh.text, payload: fresh.payload, ..stored },
+      None => fresh,
+  };
+  registry.register(entry).await?; // only the changed text is embedded again
+  ```
+
+- **`remove(id)`** deletes the entry, its vectors and its usage history, and
+  returns whether it existed: call it when a tool disappears from its server.
+
+Vector reuse assumes the formatter and the model have not changed since the
+entry was stored. After changing either, `remove` entries before registering
+them again, or start from an empty store.
 
 To use a database, implement `EntryStore` (see
 [external backends](#plugging-in-an-external-backend)). One invariant:
@@ -576,7 +606,7 @@ impl EntryStore<Value> for MeiliBackend {
         }
     }
 
-    // insert, get_embeddings, list_all, append_example, remove_example:
+    // insert, remove, get_embeddings, list_all, append_example, remove_example:
     // see the table below
 }
 ```
@@ -586,6 +616,7 @@ impl EntryStore<Value> for MeiliBackend {
 | Method | Meilisearch |
 |---|---|
 | `insert` | Replace the document in `entries`; delete its chunks (filter `entry = "…"`); add one chunk per embedding, `example: None` for the first |
+| `remove` | Delete the document in `entries` and its chunks (filter `entry = "…"`) |
 | `get` | `get_document` on `entries` (above) |
 | `get_embeddings` | `get_documents` on `chunks` with filter `entry = "…"` and `retrieve_vectors`; canonical chunk first, then examples in `entry.examples` order |
 | `append_example` | Add the text to `entry.examples` in `entries`; add one chunk |

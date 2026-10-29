@@ -5,18 +5,18 @@ use semantic_registry::embedder::CandleEmbedder;
 use semantic_registry::prelude::*;
 use serde_json::Value;
 
-// Importation de Candle pour la génération de texte locale
+// Candle, for local text generation
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::qwen2::{Config, ModelForCausalLM};
 use hf_hub::api::tokio::Api;
 use tokenizers::Tokenizer;
 
-/// Charge un modèle Qwen2.5-0.5B local via Candle et génère 3 exemples d'utilisation
+/// Loads Qwen2.5-0.5B locally with Candle and generates 3 example queries for an entry
 async fn generate_examples_with_candle_llm(
     tool: &Entry<Value>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    println!("  [LLM Candle] Génération pour '{}'...", tool.id);
+    println!("  [LLM] generating examples for '{}'...", tool.id);
 
     let api = Api::new()?;
     let repo = api.model("Qwen/Qwen2.5-0.5B-Instruct".to_string());
@@ -38,7 +38,7 @@ async fn generate_examples_with_candle_llm(
 
     let mut model = ModelForCausalLM::new(&config, vb)?;
 
-    // Construction du prompt ChatML
+    // ChatML prompt
     let prompt_text = format!(
         "<|im_start|>user\n\
          Generate exactly 3 short user questions for the tool '{}': {}\n\
@@ -86,16 +86,16 @@ async fn generate_examples_with_candle_llm(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("1. Initialisation de l'Embedder Candle (all-MiniLM-L6-v2)...");
+    println!("1. Loading the embedder (all-MiniLM-L6-v2)...");
     let embedder = Arc::new(CandleEmbedder::minilm_v2().await?);
 
-    // Registre 1 : SANS exemples (description seule)
+    // Registry 1: WITHOUT examples (text only)
     let registry_no_ex: SemanticRegistry<Value> = SemanticRegistry::in_memory(embedder.clone());
 
-    // Registre 2 : AVEC exemples synthétiques
+    // Registry 2: WITH generated examples
     let registry_with_ex: SemanticRegistry<Value> = SemanticRegistry::in_memory(embedder.clone());
 
-    // Définition de 3 outils distincts
+    // Three distinct tools
     let raw_tools = vec![
         Entry::new(
             "query_database",
@@ -134,23 +134,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     ];
 
-    println!("\n2. Indexation des outils et génération d'exemples LLM...");
+    println!("\n2. Indexing tools and generating examples...");
     for tool in raw_tools {
-        // Enregistrement dans le registre SANS exemples
+        // Registry without examples
         registry_no_ex.register(tool.clone()).await?;
 
-        // Génération des exemples pour le registre AVEC exemples
+        // Generate examples for the registry with examples
         let mut enriched_tool = tool.clone();
         match generate_examples_with_candle_llm(&tool).await {
             Ok(examples) => {
-                println!("     Exemples retenus :");
+                println!("     Examples kept:");
                 for ex in &examples {
                     println!("       * \"{ex}\"");
                 }
                 enriched_tool = enriched_tool.with_examples(examples);
             }
             Err(e) => {
-                eprintln!("     Erreur LLM ({e}), utilisation d'un fallback statique.");
+                eprintln!("     LLM error ({e}), using a static fallback.");
                 enriched_tool =
                     enriched_tool.with_examples(vec![format!("How do I use {}?", tool.id)]);
             }
@@ -160,7 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n============================================================");
-    println!(" 3. COMPARAISON DES RECHERCHES (SANS EXEMPLES vs AVEC EXEMPLES)");
+    println!(" 3. SEARCH COMPARISON (WITHOUT vs WITH EXAMPLES)");
     println!("============================================================\n");
 
     let test_queries = vec![
@@ -170,20 +170,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     for query in test_queries {
-        println!("Requête utilisateur : \"{}\"", query);
+        println!("Query: \"{}\"", query);
 
         let res_no_ex = registry_no_ex.search(query, 1).await?;
         let res_with_ex = registry_with_ex.search(query, 1).await?;
 
         if let Some(r1) = res_no_ex.first() {
             println!(
-                "  [SANS Exemples] Outil : {:<20} | Score : {:.4}",
+                "  [without examples] {:<20} | score {:.4}",
                 r1.entry.id, r1.score
             );
         }
         if let Some(r2) = res_with_ex.first() {
             println!(
-                "  [AVEC Exemples] Outil : {:<20} | Score : {:.4} (MaxSim)",
+                "  [with examples]    {:<20} | score {:.4}",
                 r2.entry.id, r2.score
             );
         }

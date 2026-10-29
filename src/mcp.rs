@@ -1,15 +1,15 @@
-//! Intégration MCP (feature `mcp`) : ingestion d'une réponse `tools/list` et définition
-//! de l'outil `search_tools`. Le protocole lui-même (transport, serveur) reste à l'appelant.
+//! MCP helpers (feature `mcp`): ingest a `tools/list` response, and the definition of the
+//! `search_tools` tool. The protocol itself (transport, server) stays with the caller.
 
 use serde_json::{json, Value};
 
 use crate::types::Entry;
 
-/// Entrées tirées d'une réponse `tools/list`.
+/// Entries from a `tools/list` response.
 ///
-/// `id` est le nom de l'outil, `text` son nom, sa description et ses paramètres
-/// (voir [`tool_text`]), et `payload` l'objet outil MCP complet, `inputSchema` compris.
-/// Les outils sans `name` ou sans `description` sont ignorés.
+/// `id` is the tool name, `text` its name, description and parameters (see [`tool_text`]),
+/// and `payload` the full MCP tool object, `inputSchema` included. Tools without a `name`
+/// or a `description` are skipped.
 pub fn parse_tools_list(response: &Value) -> Vec<Entry<Value>> {
     let Some(tools) = response.get("tools").and_then(Value::as_array) else {
         return Vec::new();
@@ -29,7 +29,7 @@ pub fn parse_tools_list(response: &Value) -> Vec<Entry<Value>> {
         .collect()
 }
 
-/// Texte canonique d'un outil : `"name: description | Parameters: a (doc), b"`
+/// Canonical text of a tool: `"name: description | Parameters: a (doc), b"`.
 pub fn tool_text(name: &str, description: &str, input_schema: &Value) -> String {
     let mut text = format!("{name}: {description}");
     if let Some(props) = input_schema.get("properties").and_then(Value::as_object) {
@@ -49,8 +49,8 @@ pub fn tool_text(name: &str, description: &str, input_schema: &Value) -> String 
     text
 }
 
-/// Définition MCP de l'outil `search_tools`, à déclarer dans un serveur MCP ou une boucle
-/// d'agent à la place de la liste complète des outils
+/// MCP definition of the `search_tools` tool, to declare in an MCP server or agent loop
+/// instead of the full tool list.
 pub fn search_tools_definition() -> Value {
     json!({
         "name": "search_tools",
