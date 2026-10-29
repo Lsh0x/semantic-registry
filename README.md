@@ -21,6 +21,7 @@ validated or corrected queries become examples that sharpen future searches.
 - [Scoring](#scoring)
 - [Embedders](#embedders)
 - [Stores](#stores)
+- [Plugging in an external backend](#plugging-in-an-external-backend)
 - [MCP and the `search_tools` meta-tool](#mcp-and-the-search_tools-meta-tool)
 - [Custom formatter](#custom-formatter)
 - [Limits](#limits)
@@ -374,9 +375,166 @@ if store.get("convert_currency").await?.is_none() {
 }
 ```
 
-To use a database, implement `ToolStore`. One invariant: `embeddings[0]` is
-the canonical chunk and `embeddings[i + 1]` belongs to `tool.examples[i]`;
-`remove_example(name, i)` removes both.
+To use a database, implement `ToolStore` (see
+[external backends](#plugging-in-an-external-backend)). One invariant:
+`embeddings[0]` is the canonical chunk and `embeddings[i + 1]` belongs to
+`tool.examples[i]`; `remove_example(name, i)` removes both.
+
+## Plugging in an external backend
+
+`ToolStore` and `ToolRetriever` are separate traits, and the registry does not
+know about `CosineRetriever`. A search engine that stores vectors can take
+over both: implement the two traits on one type and pass it twice.
+
+```rust
+let backend = Arc::new(MeiliBackend { client, embedder: embedder.clone() });
+let registry = ToolRegistry::new(backend.clone(), embedder, backend, formatter);
+```
+
+The registry, the feedback guards and the cache keep working unchanged.
+Below, [Meilisearch](https://www.meilisearch.com) as an example
+([`meilisearch-sdk`](https://crates.io/crates/meilisearch-sdk) 0.33).
+
+### Layout
+
+Two indexes:
+
+- `tools`: one document per `ToolDefinition`, primary key `name`.
+- `tool_chunks`: one document per chunk, the description or one example,
+  with its vector.
+
+Storing chunks as separate documents gives MaxSim for free: searching with
+`distinct = tool` keeps each tool's best chunk, and that chunk tells which
+example matched, so `LeastRecentlyUsed` keeps working.
+
+```json
+{
+  "filterableAttributes": ["tool", "example"],
+  "embedders": {
+    "tools-rag": { "source": "userProvided", "dimensions": 384 }
+  }
+}
+```
+
+`userProvided` means tools-rag computes the vectors and Meilisearch only
+stores and searches them. Keep it that way: the feedback guards compare the
+query vector with the tool's vectors in Rust, so both sides must come from
+the same model.
+
+### Retriever
+
+```rust
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use meilisearch_sdk::client::Client;
+use meilisearch_sdk::errors::{Error, ErrorCode, MeilisearchError};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tools_rag::errors::{Result, ToolRagError};
+use tools_rag::prelude::*;
+
+/// One document per chunk in the `tool_chunks` index
+#[derive(Serialize, Deserialize)]
+struct Chunk {
+    id: String,
+    tool: String,
+    /// `None` for the canonical chunk, the example text otherwise
+    example: Option<String>,
+    #[serde(rename = "_vectors", default, skip_serializing_if = "Value::is_null")]
+    vectors: Value,
+}
+
+pub struct MeiliBackend {
+    client: Client,
+    embedder: Arc<dyn Embedder>,
+}
+
+fn store_err(e: Error) -> ToolRagError {
+    ToolRagError::StoreError(e.to_string())
+}
+
+#[async_trait]
+impl ToolRetriever for MeiliBackend {
+    async fn retrieve(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let vector = self.embedder.embed(query).await?;
+        let hits = self
+            .client
+            .index("tool_chunks")
+            .search()
+            .with_vector(&vector)
+            .with_hybrid("tools-rag", 1.0) // 1.0 = vectors only; lower it to mix in keywords
+            .with_distinct("tool") // best chunk per tool: MaxSim, done by Meilisearch
+            .with_show_ranking_score(true)
+            .with_limit(limit)
+            .execute::<Chunk>()
+            .await
+            .map_err(store_err)?
+            .hits;
+
+        let mut results = Vec::with_capacity(hits.len());
+        for hit in hits {
+            let Some(tool) = self.get(&hit.result.tool).await? else {
+                continue;
+            };
+            let matched_example = hit
+                .result
+                .example
+                .and_then(|text| tool.examples.iter().position(|e| *e == text));
+            results.push(SearchResult {
+                tool,
+                score: hit.ranking_score.unwrap_or(0.0) as f32,
+                matched_example,
+            });
+        }
+        Ok(results)
+    }
+}
+
+#[async_trait]
+impl ToolStore for MeiliBackend {
+    async fn get(&self, name: &str) -> Result<Option<ToolDefinition>> {
+        match self.client.index("tools").get_document(name).await {
+            Ok(tool) => Ok(Some(tool)),
+            Err(Error::Meilisearch(MeilisearchError {
+                error_code: ErrorCode::DocumentNotFound,
+                ..
+            })) => Ok(None),
+            Err(e) => Err(store_err(e)),
+        }
+    }
+
+    // insert, get_embeddings, list_all, append_example, remove_example:
+    // see the table below
+}
+```
+
+### Store
+
+| Method | Meilisearch |
+|---|---|
+| `insert` | Replace the document in `tools`; delete the tool's chunks (filter `tool = "…"`); add one chunk per embedding, `example: None` for the first |
+| `get` | `get_document` on `tools` (above) |
+| `get_embeddings` | `get_documents` on `tool_chunks` with filter `tool = "…"` and `retrieve_vectors`; canonical chunk first, then examples in `tool.examples` order |
+| `append_example` | Add the text to `tool.examples` in `tools`; add one chunk |
+| `remove_example(i)` | Remove `tool.examples[i]` in `tools`; delete the chunk with filter `tool = "…" AND example = "…"` |
+| `list_all` | Not called when Meilisearch is the retriever: only `CosineRetriever` uses it |
+
+Chunk ids must be unique and contain only `a-z A-Z 0-9 - _`: derive them from
+the tool name and a hash of the example text.
+
+### What changes
+
+- **Scores.** `_rankingScore` is not a raw cosine, especially in hybrid mode.
+  Recalibrate `min_search_score`, `min_feedback_score` and
+  `dedup_similarity_threshold` on your data.
+- **Hybrid search.** A `semantic_ratio` below `1.0` mixes keyword ranking in:
+  useful when queries name things exactly (`kubectl`, `S3`).
+- **`WeightedMaxSim`** has no Meilisearch equivalent. To keep it, fetch more
+  hits with `retrieve_vectors` and rescore them in Rust.
+- **One lookup per hit.** `retrieve` fetches each `ToolDefinition` with `get`;
+  for large `limit`s, fetch them in one `get_documents` call with a
+  `name IN [...]` filter.
 
 ## MCP and the `search_tools` meta-tool
 
