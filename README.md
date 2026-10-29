@@ -12,10 +12,13 @@ An agent with hundreds of tools cannot put every schema in its context window.
 and returns only the tools relevant to the user's intent. It learns from usage:
 validated or corrected queries become examples that sharpen future searches.
 
+![tools-rag architecture: register, search and feedback flows](https://raw.githubusercontent.com/Lsh0x/tools-rag/main/assets/architecture.svg)
+
 ```toml
 [dependencies]
-tools-rag = "0.1"                                       # core only: bring your own Embedder
-# tools-rag = { version = "0.1", features = ["candle"] } # + local MiniLM embedder
+tools-rag = "0.2"                                       # core only: bring your own Embedder
+# tools-rag = { version = "0.2", features = ["candle"] } # + local MiniLM embedder
+# tools-rag = { version = "0.2", features = ["cache"] }  # + embedding cache (tiercache)
 ```
 
 ## Quick start
@@ -68,11 +71,28 @@ Ok(())
 | `max_examples_per_tool` | `10` | Cap per tool; `0` disables feedback |
 | `dedup_similarity_threshold` | `0.85` | Reject queries this close to an existing chunk |
 | `min_feedback_score` | `0.40` | Reject a `Success` on a query far from the tool (corrections are exempt) |
-| `eviction_policy` | `Fifo` | `Fifo`, `MostRedundantWithBase` or `RejectWhenFull` |
+| `eviction_policy` | `Fifo` | `Fifo`, `LeastRecentlyUsed`, `MostRedundantWithBase` or `RejectWhenFull` |
 | `min_search_score` | `0.0` | Drop search results below this score |
 
   It returns a `FeedbackDecision` stating whether the example was added,
   what it evicted, or why it was rejected.
+- **LRU eviction.** Each `SearchResult` reports the example that won
+  (`matched_example`); the registry records those hits, and
+  `LeastRecentlyUsed` evicts the example that has gone longest without
+  winning a search. Usage history is in memory and restarts empty.
+- **Embedding cache.** `search()` then `record_feedback()` embed the same
+  query twice. `CachedEmbedder` (feature `cache`) wraps any `Embedder` with a
+  [tiercache](https://crates.io/crates/tiercache) cache: an in-process LRU by
+  default, or your own levels (Redis, a database). Keys are namespaced by
+  model so switching models never serves stale vectors.
+
+```rust
+let embedder = Arc::new(CachedEmbedder::new(
+    Arc::new(CandleEmbedder::minilm_v2().await?),
+    "all-MiniLM-L6-v2", // namespace: change it when the model changes
+    1024,               // LRU capacity
+));
+```
 
 ## Pluggable parts
 
@@ -87,12 +107,13 @@ Every stage is a trait: `Embedder`, `ToolStore`, `ToolRetriever`,
 No feature is enabled by default: the core depends only on `serde`,
 `serde_json`, `async-trait`, `thiserror` and `tokio` (`fs` only). Implement
 `Embedder` over any API or model, or enable `candle` for local inference.
+`cache` adds `tiercache`, which has no dependencies.
 
 ## Examples
 
 ```bash
 cargo run --features candle --example basic
-cargo run --features candle --example feedback
+cargo run --features candle,cache --example feedback
 cargo run --features candle --example persistent_store
 cargo run --features candle --example llm_example_gen   # generates tool examples with Qwen2.5-0.5B
 ```

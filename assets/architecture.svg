@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 470" width="1000" height="470" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <style>
+    .box { fill: #f6f8fa; stroke: #d0d7de; stroke-width: 1.5; }
+    .core { fill: #ddf4ff; stroke: #54aeff; stroke-width: 1.5; }
+    .chunk { fill: #ffffff; stroke: #54aeff; stroke-width: 1.2; }
+    .chunk-ex { fill: #ffffff; stroke: #d0d7de; stroke-width: 1.2; }
+    .title { fill: #1f2328; font-size: 15px; font-weight: 600; }
+    .sub { fill: #59636e; font-size: 12px; }
+    .lane { fill: #59636e; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; }
+    .wire { stroke: #8c959f; stroke-width: 1.6; fill: none; }
+    .loop { stroke: #1a7f37; stroke-width: 1.8; fill: none; stroke-dasharray: 6 4; }
+    .loop-label { fill: #1a7f37; font-size: 12px; font-weight: 600; }
+    .head { fill: #8c959f; }
+    .head-loop { fill: #1a7f37; }
+    @media (prefers-color-scheme: dark) {
+      .box { fill: #161b22; stroke: #3d444d; }
+      .core { fill: #0c2d6b; stroke: #4493f8; }
+      .chunk { fill: #0d1117; stroke: #4493f8; }
+      .chunk-ex { fill: #0d1117; stroke: #3d444d; }
+      .title { fill: #f0f6fc; }
+      .sub, .lane { fill: #9198a1; }
+      .wire { stroke: #656c76; }
+      .head { fill: #656c76; }
+      .loop { stroke: #3fb950; }
+      .loop-label { fill: #3fb950; }
+      .head-loop { fill: #3fb950; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="head-loop" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+
+  <!-- Lane labels -->
+  <text class="lane" x="20" y="34">REGISTER</text>
+  <text class="lane" x="20" y="184">SEARCH</text>
+  <text class="lane" x="20" y="334">FEEDBACK</text>
+
+  <!-- Inputs -->
+  <rect class="box" x="20" y="48" width="160" height="64" rx="10"/>
+  <text class="title" x="100" y="76" text-anchor="middle">ToolDefinition</text>
+  <text class="sub" x="100" y="96" text-anchor="middle">MCP tools/list, JSON…</text>
+
+  <rect class="box" x="20" y="198" width="160" height="64" rx="10"/>
+  <text class="title" x="100" y="226" text-anchor="middle">User intent</text>
+  <text class="sub" x="100" y="246" text-anchor="middle">via search_tools</text>
+
+  <rect class="box" x="20" y="348" width="160" height="64" rx="10"/>
+  <text class="title" x="100" y="376" text-anchor="middle">Outcome</text>
+  <text class="sub" x="100" y="396" text-anchor="middle">Success · CorrectedTo</text>
+
+  <!-- Formatter -->
+  <rect class="box" x="215" y="48" width="160" height="64" rx="10"/>
+  <text class="title" x="295" y="76" text-anchor="middle">Formatter</text>
+  <text class="sub" x="295" y="96" text-anchor="middle">1 canonical + 1 / example</text>
+
+  <!-- Embedder (shared) -->
+  <rect class="core" x="410" y="40" width="160" height="380" rx="12"/>
+  <text class="title" x="490" y="214" text-anchor="middle">Embedder</text>
+  <text class="sub" x="490" y="236" text-anchor="middle">Candle MiniLM</text>
+  <text class="sub" x="490" y="252" text-anchor="middle">or your own</text>
+  <text class="sub" x="490" y="280" text-anchor="middle">CachedEmbedder</text>
+  <text class="sub" x="490" y="296" text-anchor="middle">(tiercache)</text>
+
+  <!-- ToolStore -->
+  <rect class="box" x="605" y="40" width="185" height="80" rx="10"/>
+  <text class="title" x="697" y="64" text-anchor="middle">ToolStore</text>
+  <rect class="chunk" x="620" y="78" width="58" height="28" rx="5"/>
+  <text class="sub" x="649" y="96" text-anchor="middle">base</text>
+  <rect class="chunk-ex" x="684" y="78" width="46" height="28" rx="5"/>
+  <text class="sub" x="707" y="96" text-anchor="middle">ex</text>
+  <rect class="chunk-ex" x="736" y="78" width="40" height="28" rx="5"/>
+  <text class="sub" x="756" y="96" text-anchor="middle">ex</text>
+
+  <!-- Retriever -->
+  <rect class="core" x="605" y="190" width="185" height="80" rx="10"/>
+  <text class="title" x="697" y="218" text-anchor="middle">Retriever</text>
+  <text class="sub" x="697" y="238" text-anchor="middle">MaxSim over chunks</text>
+  <text class="sub" x="697" y="254" text-anchor="middle">WeightedMaxSim</text>
+
+  <!-- Guards -->
+  <rect class="box" x="605" y="330" width="185" height="110" rx="10"/>
+  <text class="title" x="697" y="356" text-anchor="middle">Guards</text>
+  <text class="sub" x="697" y="378" text-anchor="middle">dedup ≥ 0.85</text>
+  <text class="sub" x="697" y="396" text-anchor="middle">confidence ≥ 0.40</text>
+  <text class="sub" x="697" y="414" text-anchor="middle">cap · FIFO / LRU /</text>
+  <text class="sub" x="697" y="430" text-anchor="middle">most-redundant</text>
+
+  <!-- Output -->
+  <rect class="box" x="840" y="198" width="140" height="64" rx="10"/>
+  <text class="title" x="910" y="226" text-anchor="middle">Top-k tools</text>
+  <text class="sub" x="910" y="246" text-anchor="middle">to the LLM</text>
+
+  <!-- Wires -->
+  <path class="wire" d="M180,80 H213" marker-end="url(#a)"/>
+  <path class="wire" d="M375,80 H408" marker-end="url(#a)"/>
+  <path class="wire" d="M570,80 H603" marker-end="url(#a)"/>
+
+  <path class="wire" d="M180,230 H408" marker-end="url(#a)"/>
+  <path class="wire" d="M570,230 H603" marker-end="url(#a)"/>
+  <path class="wire" d="M697,120 V188" marker-end="url(#a)"/>
+  <path class="wire" d="M790,230 H838" marker-end="url(#a)"/>
+
+  <path class="wire" d="M180,380 H408" marker-end="url(#a)"/>
+  <path class="wire" d="M570,380 H603" marker-end="url(#a)"/>
+
+  <!-- Learning loop: guards append examples to the store -->
+  <path class="loop" d="M790,400 H815 Q825,400 825,390 V90 Q825,80 815,80 H792" marker-end="url(#g)"/>
+  <text class="loop-label" x="832" y="160">append</text>
+  <text class="loop-label" x="832" y="176">example</text>
+</svg>
