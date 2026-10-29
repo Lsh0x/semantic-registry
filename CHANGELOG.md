@@ -6,6 +6,16 @@ Maintained by [release-plz](https://release-plz.dev/) from
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/Lsh0x/tools-rag/releases/tag/v0.1.0) - 2026-10-29
+
+### Added
+
+- semantic tool registry with configurable feedback loop
+
+### Other
+
+- add CI, cargo-deny, dependabot and release-plz
+
 ### Added
 
 - `ToolRegistry` with pluggable `Embedder`, `ToolStore`, `ToolRetriever` and
