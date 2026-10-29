@@ -58,7 +58,10 @@ pub enum FeedbackOutcome {
 }
 
 /// What to do when an entry has reached `max_examples_per_entry`.
+///
+/// Non-exhaustive: new policies may be added in minor releases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum EvictionPolicy {
     /// Evict the oldest example (ring buffer).
     #[default]
@@ -139,7 +142,11 @@ impl Default for RegistryConfig {
 }
 
 /// What `record_feedback` did, and why.
+///
+/// Non-exhaustive: new outcomes may be added in minor releases, so a `match` needs a
+/// `_ =>` arm.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum FeedbackDecision {
     /// The query was added as an example.
     Added {

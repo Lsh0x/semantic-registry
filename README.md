@@ -269,6 +269,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         FeedbackDecision::BelowMinScore { score } => println!("too far off ({score:.2})"),
         FeedbackDecision::Full => println!("example quota reached"),
         FeedbackDecision::EntryNotFound => println!("no such entry"),
+        other => println!("{other:?}"), // the enum is #[non_exhaustive]
     }
 
     let after = registry.search(query, 1).await?.remove(0);
