@@ -98,6 +98,7 @@ impl<P: Payload + Serialize + DeserializeOwned> JsonStore<P> {
                         id: entry.id.clone(),
                         text: entry.text.clone(),
                         examples: entry.examples.clone(),
+                        content: entry.content.clone(),
                         payload: &entry.payload,
                     },
                     embeddings: embeddings.clone(),

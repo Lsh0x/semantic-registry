@@ -45,12 +45,13 @@ impl<P: Payload> CosineRetriever<P> {
     }
 
     /// Score of an entry under the strategy. `embeddings[0]` is the canonical chunk and
-    /// `embeddings[1..]` the examples.
+    /// `embeddings[1..]` the other chunks, scored like examples.
     pub fn score(&self, query_vec: &[f32], embeddings: &[Vec<f32>]) -> f32 {
         self.score_with_match(query_vec, embeddings).0
     }
 
-    /// Score, and index of the winning example (`None` when the canonical chunk wins).
+    /// Score, and index in `embeddings[1..]` of the winning chunk (`None` when the canonical
+    /// chunk wins).
     pub fn score_with_match(
         &self,
         query_vec: &[f32],
@@ -81,7 +82,9 @@ impl<P: Payload> Retriever<P> for CosineRetriever<P> {
         let mut scored: Vec<SearchResult<P>> = all_entries
             .into_iter()
             .map(|(entry, embeddings)| {
-                let (score, matched_example) = self.score_with_match(&query_vec, &embeddings);
+                let (score, matched) = self.score_with_match(&query_vec, &embeddings);
+                // Content chunks sit before the examples: a content win names no example
+                let matched_example = matched.and_then(|i| i.checked_sub(entry.content.len()));
                 SearchResult {
                     entry,
                     score,

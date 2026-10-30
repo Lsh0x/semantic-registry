@@ -82,7 +82,8 @@ impl<P: Payload> SemanticRegistry<P> {
     }
 
     /// `register` for a caller already holding the entry's lock
-    async fn insert_locked(&self, entry: Entry<P>) -> Result<()> {
+    async fn insert_locked(&self, mut entry: Entry<P>) -> Result<()> {
+        entry.content = self.formatter.content_chunks(&entry);
         let chunks = self.formatter.format(&entry);
         let mut known = self.previous_vectors(&entry.id).await?;
 
@@ -289,6 +290,7 @@ impl<P: Payload> SemanticRegistry<P> {
 
         // 3. Evict until there is room
         let mut examples = entry.examples;
+        let content_len = entry.content.len();
         let mut embeddings = existing_embeddings;
         let mut evicted = Vec::new();
         let persisted_uses = match config.eviction_policy {
@@ -305,7 +307,7 @@ impl<P: Payload> SemanticRegistry<P> {
                 EvictionPolicy::RejectWhenFull => return Ok(FeedbackDecision::Full),
                 EvictionPolicy::Fifo => 0,
                 EvictionPolicy::MostRedundantWithBase => {
-                    most_redundant_with_base(&embeddings).min(examples.len() - 1)
+                    most_redundant_with_base(&embeddings, content_len).min(examples.len() - 1)
                 }
                 EvictionPolicy::LeastRecentlyUsed => {
                     self.usage
@@ -316,8 +318,8 @@ impl<P: Payload> SemanticRegistry<P> {
             let example = examples.remove(index);
             self.usage.forget(target_id, &example);
             evicted.push(example);
-            if index + 1 < embeddings.len() {
-                embeddings.remove(index + 1);
+            if 1 + content_len + index < embeddings.len() {
+                embeddings.remove(1 + content_len + index);
             }
         }
 
@@ -334,13 +336,14 @@ impl<P: Payload> SemanticRegistry<P> {
     }
 }
 
-/// Index in `examples` of the example most similar to the canonical chunk `embeddings[0]`.
-fn most_redundant_with_base(embeddings: &[Vec<f32>]) -> usize {
-    let Some((base, examples)) = embeddings.split_first() else {
+/// Index in `examples` of the example most similar to the canonical chunk `embeddings[0]`;
+/// the `content_len` content chunks that follow it are not examples.
+fn most_redundant_with_base(embeddings: &[Vec<f32>], content_len: usize) -> usize {
+    let Some((base, rest)) = embeddings.split_first() else {
         return 0;
     };
-    examples
-        .iter()
+    rest.iter()
+        .skip(content_len)
         .enumerate()
         .map(|(i, emb)| (i, cosine_similarity(base, emb)))
         .max_by(|a, b| a.1.total_cmp(&b.1))
