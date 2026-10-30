@@ -10,6 +10,11 @@ pub struct Entry<P> {
     /// Phrasings users might type: seeded at registration, then grown by feedback.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub examples: Vec<String>,
+    /// Chunks the registry's formatter cut from the entry (see
+    /// [`Formatter::content_chunks`](crate::traits::Formatter::content_chunks)): embedded
+    /// after the canonical chunk, before the examples, and never evicted. Set by `register`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content: Vec<String>,
     /// Caller data (a tool schema, a config, `()`…). Never read by the library.
     pub payload: P,
 }
@@ -21,6 +26,7 @@ impl<P> Entry<P> {
             id: id.into(),
             text: text.into(),
             examples: Vec::new(),
+            content: Vec::new(),
             payload,
         }
     }

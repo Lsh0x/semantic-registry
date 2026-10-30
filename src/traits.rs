@@ -15,8 +15,9 @@ impl<T: Clone + Send + Sync + 'static> Payload for T {}
 /// Decides which text gets embedded for an entry.
 ///
 /// The canonical chunk comes from [`canonical_text`](Self::canonical_text), then one chunk
-/// per example from [`example_text`](Self::example_text), in order: scoring and eviction
-/// rely on that order. Examples learned through feedback also go through `example_text`.
+/// per item of [`content_chunks`](Self::content_chunks) (stored in `entry.content`, never
+/// evicted), then one per example from [`example_text`](Self::example_text), in order:
+/// scoring and eviction rely on that order. Examples learned through feedback also go through `example_text`.
 pub trait Formatter<P>: Send + Sync {
     /// Text of the canonical chunk.
     fn canonical_text(&self, entry: &Entry<P>) -> String;
@@ -26,9 +27,16 @@ pub trait Formatter<P>: Send + Sync {
         example.to_string()
     }
 
-    /// Every chunk of the entry: the canonical one first, then one per example.
+    /// Content chunks of the entry, cut from its payload or text. Defaults to none.
+    fn content_chunks(&self, _entry: &Entry<P>) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Every chunk of the entry: the canonical one first, then one per `entry.content` item
+    /// (as is), then one per example.
     fn format(&self, entry: &Entry<P>) -> Vec<String> {
         std::iter::once(self.canonical_text(entry))
+            .chain(entry.content.iter().cloned())
             .chain(entry.examples.iter().map(|e| self.example_text(entry, e)))
             .collect()
     }
@@ -36,7 +44,8 @@ pub trait Formatter<P>: Send + Sync {
 
 /// Storage for entries and their embeddings.
 ///
-/// Invariant: `embeddings[0]` is the canonical chunk and `embeddings[i + 1]` belongs to
+/// Invariant: `embeddings[0]` is the canonical chunk, `embeddings[1..=k]` belong to
+/// `entry.content` (`k = entry.content.len()`) and `embeddings[1 + k + i]` belongs to
 /// `entry.examples[i]`, so `remove_example(id, i)` removes both.
 #[async_trait]
 pub trait EntryStore<P: Payload>: Send + Sync {

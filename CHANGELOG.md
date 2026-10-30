@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 Maintained by [release-plz](https://release-plz.dev/) from
 [conventional commits](https://www.conventionalcommits.org/).
 
+## Unreleased
+
+### Added
+
+- Content chunks: `Formatter::content_chunks`, `Entry::content`, never evicted
+
 ## [0.2.1](https://github.com/Lsh0x/semantic-registry/compare/semantic-registry-v0.2.0...semantic-registry-v0.2.1) - 2026-10-29
 
 ### Added

@@ -101,8 +101,9 @@ pub(crate) fn remove<P>(store: &mut [Record<P>], id: &str, index: usize) -> bool
     match store.iter_mut().find(|(e, _)| e.id == id) {
         Some((entry, embeddings)) if index < entry.examples.len() => {
             entry.examples.remove(index);
-            if index + 1 < embeddings.len() {
-                embeddings.remove(index + 1);
+            let at = 1 + entry.content.len() + index;
+            if at < embeddings.len() {
+                embeddings.remove(at);
             }
             true
         }
