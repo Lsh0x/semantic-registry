@@ -6,6 +6,12 @@ Maintained by [release-plz](https://release-plz.dev/) from
 
 ## Unreleased
 
+## [0.3.0](https://github.com/Lsh0x/semantic-registry/compare/semantic-registry-v0.2.1...semantic-registry-v0.3.0) - 2026-10-30
+
+### Added
+
+- content chunks owned by the registry ([#25](https://github.com/Lsh0x/semantic-registry/pull/25))
+
 ### Added
 
 - Content chunks: `Formatter::content_chunks`, `Entry::content`, never evicted
