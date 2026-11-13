@@ -37,6 +37,8 @@ hands the payload back.
 - [Scoring](#scoring)
 - [Embedders](#embedders)
 - [Stores](#stores)
+- [Searching within a caller's view](#searching-within-a-callers-view)
+- [Keeping an index entry by entry](#keeping-an-index-entry-by-entry)
 - [Plugging in an external backend](#plugging-in-an-external-backend)
 - [MCP tools](#mcp-tools)
 - [Custom formatter](#custom-formatter)
@@ -47,7 +49,7 @@ hands the payload back.
 
 ```toml
 [dependencies]
-semantic-registry = { version = "0.1", features = ["candle", "cache"] }
+semantic-registry = { version = "0.3", features = ["candle", "cache"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -557,6 +559,52 @@ To use a database, implement `EntryStore` (see
 [external backends](#plugging-in-an-external-backend)). One invariant:
 `embeddings[0]` is the canonical chunk and `embeddings[i + 1]` belongs to
 `entry.examples[i]`; `remove_example(id, i)` removes both.
+
+## Searching within a caller's view
+
+When callers may not read every entry, give the search a `View`: the ids it
+may answer. The view reaches the retriever **before** the cut to `limit`, so a
+caller who may read three entries out of a thousand gets the best three, not
+whatever is left of the top ten once the others are dropped.
+
+```rust
+let readable: HashSet<String> = rights.readable_ids(&caller); // or any Fn(&str) -> bool
+let hits = registry.search_in("convert 100 USD to EUR", 5, &readable).await?;
+let all = registry.search_in("convert 100 USD to EUR", 5, &AllEntries).await?; // = search
+```
+
+The library decides no right: it only returns ids the view admits. Read what a
+hit names again under the caller's rights before showing it.
+
+- `CosineRetriever` drops what the view does not admit before ranking.
+- A retriever that implements only `retrieve` gets a default `retrieve_in`: it
+  asks for `limit` entries, filters, and asks for twice as many until the page
+  is full or the retriever runs out. Exact, but each doubling ranks again:
+  override `retrieve_in` to filter inside your engine (a filter on the entry
+  id, for example).
+- `search` is unchanged; `record_feedback` learns the same way whichever
+  search found the entry.
+
+## Keeping an index entry by entry
+
+A retriever with its own index should not rebuild it from `list_all` after
+each change. An `IndexSink` is told `upsert(id)` when an entry is inserted or
+replaced or gains or loses an example, and `forget(id)` when it is removed.
+`IndexedStore` wraps any store and reports each change it writes;
+`CosineRetriever::with_index` keeps its entries in memory through the sink:
+
+```rust
+let inner: Arc<dyn EntryStore<MyPayload>> = Arc::new(InMemoryStore::new());
+let retriever = Arc::new(CosineRetriever::new(inner.clone(), embedder.clone()).with_index());
+retriever.load().await?; // list_all once, at start
+let store = Arc::new(IndexedStore::new(inner, retriever.clone()));
+let registry = SemanticRegistry::new(store, embedder, retriever);
+```
+
+Give the retriever the inner store, not the wrapper: the wrapper holds the
+retriever, and the other way round would be a reference cycle. Feedback,
+eviction, `sync` and `remove` all write through the store, so the index
+follows them. A retriever that does not implement `IndexSink` is unaffected.
 
 ## Plugging in an external backend
 

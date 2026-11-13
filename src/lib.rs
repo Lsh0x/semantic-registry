@@ -25,12 +25,14 @@ pub mod types;
 
 pub use registry::SemanticRegistry;
 pub use retriever::CosineRetriever;
-pub use store::{InMemoryStore, JsonStore};
+pub use store::{InMemoryStore, IndexedStore, JsonStore};
 
 /// The types most programs need: `use semantic_registry::prelude::*;`
 pub mod prelude {
     pub use crate::registry::SemanticRegistry;
-    pub use crate::traits::{Embedder, EntryStore, Formatter, Payload, Retriever};
+    pub use crate::traits::{
+        AllEntries, Embedder, EntryStore, Formatter, IndexSink, Payload, Retriever, View,
+    };
     pub use crate::types::{
         Entry, EvictionPolicy, FeedbackDecision, FeedbackOutcome, OnMissing, RegistryConfig,
         ScoringStrategy, SearchResult, SyncReport,

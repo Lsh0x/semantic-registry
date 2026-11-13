@@ -1,6 +1,7 @@
 //! Extension points: plug in your own embedding model, storage or search engine.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::hash::BuildHasher;
 
 use async_trait::async_trait;
 
@@ -102,4 +103,90 @@ pub trait Embedder: Send + Sync {
 pub trait Retriever<P: Payload>: Send + Sync {
     /// The best `limit` entries for `query`, best first.
     async fn retrieve(&self, query: &str, limit: usize) -> Result<Vec<SearchResult<P>>>;
+
+    /// The best `limit` entries for `query` among those `view` admits, best first.
+    ///
+    /// The view applies before the cut to `limit`: a caller who may read few entries
+    /// still gets a full page of them, not what is left of a page once the others are
+    /// dropped. Override it to apply the view inside the ranking.
+    ///
+    /// The default asks [`retrieve`](Self::retrieve) for `limit` entries, keeps those the
+    /// view admits and, while that leaves fewer than `limit` and the retriever had more to
+    /// give, asks again for twice as many. The answer is exact; it costs one more ranking
+    /// each time the request doubles.
+    async fn retrieve_in(
+        &self,
+        query: &str,
+        limit: usize,
+        view: &dyn View,
+    ) -> Result<Vec<SearchResult<P>>> {
+        let mut asked = limit;
+        loop {
+            let hits = self.retrieve(query, asked).await?;
+            let exhausted = hits.len() < asked;
+            let mut admitted: Vec<SearchResult<P>> = hits
+                .into_iter()
+                .filter(|hit| view.admits(&hit.entry.id))
+                .collect();
+            if admitted.len() >= limit || exhausted || asked == usize::MAX {
+                admitted.truncate(limit);
+                return Ok(admitted);
+            }
+            asked = asked.saturating_mul(2);
+        }
+    }
+}
+
+/// The entries a caller may be answered, by id: a search returns only ids its view admits.
+///
+/// The library decides no right: the service builds the view from its caller's rights and
+/// reads what a hit names under those rights again. Implemented for [`AllEntries`], sets of
+/// ids and closures `Fn(&str) -> bool`.
+pub trait View: Send + Sync {
+    /// Whether entry `id` may be returned.
+    fn admits(&self, id: &str) -> bool;
+}
+
+/// The view that admits every entry: [`Retriever::retrieve_in`] then answers as
+/// [`Retriever::retrieve`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AllEntries;
+
+impl View for AllEntries {
+    fn admits(&self, _id: &str) -> bool {
+        true
+    }
+}
+
+impl<S: BuildHasher + Send + Sync> View for HashSet<String, S> {
+    fn admits(&self, id: &str) -> bool {
+        self.contains(id)
+    }
+}
+
+impl View for BTreeSet<String> {
+    fn admits(&self, id: &str) -> bool {
+        self.contains(id)
+    }
+}
+
+impl<F: Fn(&str) -> bool + Send + Sync> View for F {
+    fn admits(&self, id: &str) -> bool {
+        self(id)
+    }
+}
+
+/// Told when an entry changes, so that a retriever keeps its own index entry by entry
+/// instead of reading every entry again.
+///
+/// [`IndexedStore`](crate::store::IndexedStore) calls it after each change it writes; a
+/// store may also call it itself. A retriever that does not implement it is unaffected.
+#[async_trait]
+pub trait IndexSink: Send + Sync {
+    /// Entry `id` was inserted or changed: replaced, an example appended or removed. Read
+    /// it again from the store; an id the store no longer holds is forgotten.
+    async fn upsert(&self, id: &str) -> Result<()>;
+
+    /// Entry `id` was removed.
+    async fn forget(&self, id: &str) -> Result<()>;
 }
