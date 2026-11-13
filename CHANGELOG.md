@@ -6,9 +6,24 @@ Maintained by [release-plz](https://release-plz.dev/) from
 
 ## Unreleased
 
+## [0.3.0](https://github.com/Lsh0x/semantic-registry/compare/semantic-registry-v0.2.1...semantic-registry-v0.3.0) - unreleased
+
 ### Added
 
 - Content chunks: `Formatter::content_chunks`, `Entry::content`, never evicted
+- A caller's view reaches the ranking: `View` (implemented for `AllEntries`, sets of ids
+  and `Fn(&str) -> bool`), `Retriever::retrieve_in`, `SemanticRegistry::search_in`. A
+  caller who may read few entries gets a full page of them. `CosineRetriever` filters
+  before ranking; other retrievers get an exact default that widens its request
+- An index kept entry by entry: `IndexSink` (`upsert`, `forget`), `IndexedStore` (any
+  store, reporting its writes to a sink), `CosineRetriever::with_index`, `load` and
+  `indexed`
+
+### Upgrading from 0.2
+
+Nothing to change: `search`, `retrieve` and every `EntryStore` method answer as before,
+and the new trait methods have defaults. `use semantic_registry::prelude::*` now also
+brings `View`, `AllEntries` and `IndexSink` into scope.
 
 ## [0.2.1](https://github.com/Lsh0x/semantic-registry/compare/semantic-registry-v0.2.0...semantic-registry-v0.2.1) - 2026-10-29
 

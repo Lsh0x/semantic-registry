@@ -6,7 +6,7 @@ use crate::error::Result;
 use crate::formatter::DefaultFormatter;
 use crate::retriever::{cosine_similarity, CosineRetriever};
 use crate::store::InMemoryStore;
-use crate::traits::{Embedder, EntryStore, Formatter, Payload, Retriever};
+use crate::traits::{Embedder, EntryStore, Formatter, Payload, Retriever, View};
 use crate::types::{
     Entry, EvictionPolicy, FeedbackDecision, FeedbackOutcome, OnMissing, RegistryConfig,
     SearchResult, SyncReport,
@@ -214,7 +214,32 @@ impl<P: Payload> SemanticRegistry<P> {
 
     /// At most `limit` entries, best first, without those below `min_search_score`.
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult<P>>> {
-        let mut results = self.retriever.retrieve(query, limit).await?;
+        let results = self.retriever.retrieve(query, limit).await?;
+        self.finish_search(results).await
+    }
+
+    /// At most `limit` entries among those `view` admits, best first, without those below
+    /// `min_search_score`.
+    ///
+    /// The view reaches the retriever before the cut to `limit`
+    /// ([`Retriever::retrieve_in`]): a caller who may read few entries gets a full page of
+    /// them. With [`AllEntries`](crate::traits::AllEntries) it answers as
+    /// [`search`](Self::search).
+    pub async fn search_in(
+        &self,
+        query: &str,
+        limit: usize,
+        view: &dyn View,
+    ) -> Result<Vec<SearchResult<P>>> {
+        let results = self.retriever.retrieve_in(query, limit, view).await?;
+        self.finish_search(results).await
+    }
+
+    /// Drops results below `min_search_score` and records the examples that won
+    async fn finish_search(
+        &self,
+        mut results: Vec<SearchResult<P>>,
+    ) -> Result<Vec<SearchResult<P>>> {
         results.retain(|r| r.score >= self.config.min_search_score);
         for r in &results {
             if let Some(example) = r.matched_example.and_then(|i| r.entry.examples.get(i)) {

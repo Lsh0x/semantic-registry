@@ -1,9 +1,13 @@
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
 
-use crate::error::Result;
-use crate::traits::{Embedder, EntryStore, Payload, Retriever};
-use crate::types::{ScoringStrategy, SearchResult};
+use crate::error::{Error, Result};
+use crate::traits::{AllEntries, Embedder, EntryStore, IndexSink, Payload, Retriever, View};
+use crate::types::{Entry, ScoringStrategy, SearchResult};
+
+/// An entry and its embeddings, as the store holds them (`EntryStore::list_all`)
+type Record<P> = (Entry<P>, Vec<Vec<f32>>);
 
 /// Cosine similarity; 0.0 for empty or zero vectors, or vectors of different lengths.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -22,10 +26,20 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Brute-force cosine search over every chunk in the store.
+///
+/// By default each search reads every entry with [`EntryStore::list_all`].
+/// [`with_index`](Self::with_index) keeps them in memory instead: filled once by
+/// [`load`](Self::load), then kept entry by entry through [`IndexSink`].
 pub struct CosineRetriever<P> {
     store: Arc<dyn EntryStore<P>>,
     embedder: Arc<dyn Embedder>,
     strategy: ScoringStrategy,
+    /// The entries by id, when indexed
+    index: Option<RwLock<BTreeMap<String, Record<P>>>>,
+}
+
+fn poisoned(e: impl std::fmt::Display) -> Error {
+    Error::Internal(format!("Index lock poisoned: {e}"))
 }
 
 impl<P: Payload> CosineRetriever<P> {
@@ -35,7 +49,45 @@ impl<P: Payload> CosineRetriever<P> {
             store,
             embedder,
             strategy: ScoringStrategy::default(),
+            index: None,
         }
+    }
+
+    /// Searches an index kept in memory instead of reading the store at each search.
+    ///
+    /// The index starts empty: fill it once with [`load`](Self::load), then report each
+    /// change through [`IndexSink`], for example by wrapping the store the registry writes
+    /// to in an [`IndexedStore`](crate::store::IndexedStore). Entries with equal scores
+    /// come in id order.
+    pub fn with_index(mut self) -> Self {
+        self.index = Some(RwLock::new(BTreeMap::new()));
+        self
+    }
+
+    /// Fills the index from [`EntryStore::list_all`], replacing what it held, and returns
+    /// how many entries it holds. Call it once, at start. Without an index, does nothing.
+    pub async fn load(&self) -> Result<usize> {
+        let Some(index) = &self.index else {
+            return Ok(0);
+        };
+        let entries: BTreeMap<String, Record<P>> = self
+            .store
+            .list_all()
+            .await?
+            .into_iter()
+            .map(|record| (record.0.id.clone(), record))
+            .collect();
+        let len = entries.len();
+        *index.write().map_err(poisoned)? = entries;
+        Ok(len)
+    }
+
+    /// The indexed entries, in id order; empty without an index.
+    pub fn indexed(&self) -> Result<Vec<Record<P>>> {
+        let Some(index) = &self.index else {
+            return Ok(Vec::new());
+        };
+        Ok(index.read().map_err(poisoned)?.values().cloned().collect())
     }
 
     /// Replaces the scoring strategy (default: [`ScoringStrategy::MaxSim`]).
@@ -73,30 +125,94 @@ impl<P: Payload> CosineRetriever<P> {
     }
 }
 
-#[async_trait]
-impl<P: Payload> Retriever<P> for CosineRetriever<P> {
-    async fn retrieve(&self, query: &str, limit: usize) -> Result<Vec<SearchResult<P>>> {
-        let query_vec = self.embedder.embed(query).await?;
-        let all_entries = self.store.list_all().await?;
-
-        let mut scored: Vec<SearchResult<P>> = all_entries
-            .into_iter()
+impl<P: Payload> CosineRetriever<P> {
+    /// The best `limit` of the `records` that `view` admits, best first; equal scores keep
+    /// the records' order.
+    fn rank<'a>(
+        &self,
+        query_vec: &[f32],
+        records: impl Iterator<Item = &'a Record<P>>,
+        limit: usize,
+        view: &dyn View,
+    ) -> Vec<SearchResult<P>> {
+        let mut scored: Vec<(f32, Option<usize>, &Entry<P>)> = records
+            .filter(|(entry, _)| view.admits(&entry.id))
             .map(|(entry, embeddings)| {
-                let (score, matched) = self.score_with_match(&query_vec, &embeddings);
+                let (score, matched) = self.score_with_match(query_vec, embeddings);
                 // Content chunks sit before the examples: a content win names no example
                 let matched_example = matched.and_then(|i| i.checked_sub(entry.content.len()));
-                SearchResult {
-                    entry,
-                    score,
-                    matched_example,
-                }
+                (score, matched_example, entry)
             })
             .collect();
 
-        scored.sort_by(|a, b| b.score.total_cmp(&a.score));
-        scored.truncate(limit);
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        scored
+            .into_iter()
+            .take(limit)
+            .map(|(score, matched_example, entry)| SearchResult {
+                entry: entry.clone(),
+                score,
+                matched_example,
+            })
+            .collect()
+    }
+}
 
-        Ok(scored)
+#[async_trait]
+impl<P: Payload> Retriever<P> for CosineRetriever<P> {
+    async fn retrieve(&self, query: &str, limit: usize) -> Result<Vec<SearchResult<P>>> {
+        self.retrieve_in(query, limit, &AllEntries).await
+    }
+
+    /// Drops the entries the view does not admit before ranking, then cuts to `limit`.
+    async fn retrieve_in(
+        &self,
+        query: &str,
+        limit: usize,
+        view: &dyn View,
+    ) -> Result<Vec<SearchResult<P>>> {
+        let query_vec = self.embedder.embed(query).await?;
+        match &self.index {
+            Some(index) => {
+                let index = index.read().map_err(poisoned)?;
+                Ok(self.rank(&query_vec, index.values(), limit, view))
+            }
+            None => {
+                let all_entries = self.store.list_all().await?;
+                Ok(self.rank(&query_vec, all_entries.iter(), limit, view))
+            }
+        }
+    }
+}
+
+/// Keeps the index, when there is one; does nothing otherwise.
+#[async_trait]
+impl<P: Payload> IndexSink for CosineRetriever<P> {
+    async fn upsert(&self, id: &str) -> Result<()> {
+        let Some(index) = &self.index else {
+            return Ok(());
+        };
+        let record = match self.store.get(id).await? {
+            Some(entry) => self
+                .store
+                .get_embeddings(id)
+                .await?
+                .map(|embeddings| (entry, embeddings)),
+            None => None,
+        };
+        let mut index = index.write().map_err(poisoned)?;
+        match record {
+            Some(record) => index.insert(id.to_string(), record),
+            None => index.remove(id),
+        };
+        Ok(())
+    }
+
+    async fn forget(&self, id: &str) -> Result<()> {
+        if let Some(index) = &self.index {
+            index.write().map_err(poisoned)?.remove(id);
+        }
+        Ok(())
     }
 }
 
